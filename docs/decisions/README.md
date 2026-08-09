@@ -18,3 +18,4 @@ An ADR is never edited to change its decision. A new ADR supersedes it and says 
 | [0008](0008-currency-conversion-at-write-time.md) | Convert currency at write time, store the rate |
 | [0009](0009-public-repo-private-eval-data.md) | Public repository, private evaluation data |
 | [0010](0010-journal-over-state-file.md) | Append-only journal instead of a state file |
+| [0011](0011-at-least-once-delivery-is-not-free.md) | At-least-once delivery is not free; the spec's redelivery claim is withdrawn |
