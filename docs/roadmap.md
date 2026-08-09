@@ -8,7 +8,7 @@ the model is any good.
 
 ---
 
-## ⬜ Stage 0 — Skeleton
+## 🚧 Stage 0 — Skeleton
 
 Infrastructure only. **No LLM anywhere in this stage.**
 
@@ -20,6 +20,10 @@ Infrastructure only. **No LLM anywhere in this stage.**
 - `gitleaks` hook enabled
 
 **Done when:** the bot answers `/ping` from the VPS and messages land in the table.
+
+*Software complete (package, schema, bot, tests). Remaining: Hetzner VPS provisioning,
+deployment, and the `pg_dump` cron — all blocked on owner-side prerequisites, see
+`docs/plans/stage-0-skeleton.md` → Owner prerequisites.*
 
 *Why separate: if infrastructure and model land together, the first failure costs half a
 day of guessing whether it was Docker, the network, Telegram, Postgres or the prompt.*

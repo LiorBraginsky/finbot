@@ -62,14 +62,39 @@ Reports (`/day`, `/week`, `/month`) are plain SQL — no model involved.
 
 ## Running it
 
-Nothing to run yet. Setup instructions land with Stage 0.
-
 Secrets live in `.env` (see `.env.example`) and never in the repository. A
 `gitleaks` pre-commit hook enforces this — enable it once after cloning:
 
 ```bash
 git config core.hooksPath .githooks
+cp .env.example .env   # then fill it in
 ```
+
+### Local development
+
+```bash
+pip install -e ".[dev]"
+ruff check . && ruff format --check .
+mypy src/
+pytest
+```
+
+The integration suite starts a real, throwaway Postgres via `testcontainers`, so a
+running Docker daemon is required. **These tests fail rather than skip when Docker is
+unavailable — by design:** a skipped DB test in a project that auto-merges on green
+gates is a green gate that proves nothing.
+
+### Running the stack
+
+```bash
+docker compose --env-file .env -f infra/docker-compose.yml up -d --build
+```
+
+This builds the `bot` image (Python 3.12 + `ffmpeg`, needed from Stage 2 for voice
+notes), starts `postgres`, waits for it to be healthy, then runs `alembic upgrade head`
+before starting the bot. Postgres publishes no port — long polling needs no inbound
+connection at all, so there is nothing to expose on a public VPS. Inspect the database
+with `docker compose -f infra/docker-compose.yml exec postgres psql -U finbot -d finbot`.
 
 ## Data and privacy
 
