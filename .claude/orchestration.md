@@ -70,7 +70,7 @@ Two standing exceptions to the full chain:
 | Role | Does | Must not |
 |---|---|---|
 | **architect** | Reads Truth, produces a stepwise plan for one stage into `docs/plans/`, with every design decision already made | Write product code |
-| **worker** | Executes the plan. Runs the gates. Commits. | Make a decision the plan left open — escalate instead |
+| **worker** | Executes the plan. Runs the gates. Commits. | Guess at a decision that meets the BLOCK bar — stop instead |
 | **reviewer** | Reviews the stage diff against `CLAUDE.md` and the relevant ADRs | Fix things silently; findings go back to worker |
 | **doc-curator** | Updates roadmap status, writes or amends ADRs for decisions taken during the stage | Touch product code |
 
@@ -79,33 +79,66 @@ the top of `docs/journal.md`.
 
 ## Ownership / STOP
 
-- **Branch per stage:** `stage-N-<slug>`. `main` stays green.
-- **The worker is explicitly authorized to commit** on a stage branch.
-- **Merging is not the chain's to do.** Stop at "PR ready, gates green, review clean"
-  and hand back to the owner. Never merge, never push to `main` directly.
+**This project runs autonomously.** The design is settled and ratified; the owner does
+not want a checkpoint at every plan and every merge. Run the stage end to end.
+
+- **Branch per stage:** `stage-N-<slug>`.
+- **The worker is authorized to commit** on the stage branch.
+- **Auto-merge to `main` when — and only when — every gate is green and review is
+  clean.** The branch exists to keep the stage diff readable after the fact, not to
+  block the owner.
+- **The plan is not a gate.** It is written, committed, and execution starts. The owner
+  reads it if and when they want to.
 - Never `--force`, never `--no-verify`, never amend a pushed commit.
 - The `gitleaks` pre-commit hook stays enabled; if it fires, fix the content rather than
   bypassing it. Enable hooks once per clone: `git config core.hooksPath .githooks`.
 - Message style: `feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`.
 
+**The gates carry the whole weight of this arrangement.** With auto-merge, they are the
+only thing standing between an agent and a database two people depend on. Therefore:
+
+> **A stage that cannot be verified mechanically must bring its own verification.**
+> If a stage adds behaviour no gate can check, adding that check is part of the stage,
+> not a follow-up. A green gate that proves nothing is worse than no gate, because
+> autonomy is granted against it.
+
 ## Process state
 
 - **Plans: `docs/plans/stage-N-<slug>.md`, committed.** Not gitignored, unlike the
-  orchestrator's default. A plan is part of the record that makes a three-month pause
-  survivable, and it is the artefact the owner reviews before any code is written.
+  orchestrator's default — a plan is part of the record that makes a three-month pause
+  survivable.
 - Journal entries go to `docs/journal.md`; stage status to `docs/roadmap.md`. There is no
   separate handoff or todo file — see ADR-0010.
 
-## Escalation
+## Escalation — two channels
 
-Stop and ask rather than guess when:
+Interrupting the owner and informing the owner are different acts. Do not confuse them.
 
-- the plan is silent on a decision that changes the data model or an interface;
+### BLOCK — stop and wait
+
+Only for things that genuinely cannot proceed:
+
+- an external prerequisite is missing: a bot token, VPS access, a paid account, a
+  credential;
+- a decision is required that is covered by neither the plan nor any ADR, and picking
+  wrong would change the data model or a public interface;
 - a gate fails for a reason that looks like a design problem rather than a bug;
-- a change would violate a rule in `CLAUDE.md` or contradict an ADR.
+- the work would contradict `CLAUDE.md` or an ADR. Contradicting an ADR is allowed, but
+  it needs a superseding ADR — never a silent deviation.
 
-Contradicting an ADR is allowed — but it requires a superseding ADR, not a silent
-deviation.
+Anything already answered by the plan, the spec or an ADR is **not** a blocker. Decide
+and move.
+
+### TEACH — inform without stopping
+
+The owner is learning Python and applied LLM engineering through this project, and wants
+to understand the code rather than merely own it. When a choice was made that is worth
+understanding — an async pattern picked over another, a library idiom, a retry or
+batching strategy, a schema-design trade-off — append a `## Learning notes` block to the
+stage's journal entry. Three or four sentences: what was chosen, what it was chosen over,
+and why.
+
+**This never pauses the work.** It is read asynchronously.
 
 ## Team
 

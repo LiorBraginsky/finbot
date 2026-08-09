@@ -62,9 +62,13 @@ compared against the previous version with `python -m evals.run` before it ships
 
 ## Git
 
-- Agents may commit — on a stage branch (`stage-N-<slug>`), never on `main`.
-- Merging is the owner's call. Stop at "PR ready, gates green, review clean".
-  Full rules in `.claude/orchestration.md` → `## Ownership / STOP`.
+- Agents commit on a stage branch (`stage-N-<slug>`) and merge it to `main` themselves
+  once every gate is green and review is clean. This project runs autonomously.
+- Because merging is unattended, **the gates carry the whole weight**: a stage that
+  cannot be verified mechanically must add the verification it needs, as part of itself.
+- Interrupt the owner only at the BLOCK bar; everything worth knowing but not worth
+  stopping for goes into `## Learning notes` in the journal entry.
+  Full rules in `.claude/orchestration.md` → `## Ownership / STOP` and `## Escalation`.
 - Never `--force`, never `--no-verify`, never amend a pushed commit.
 - The `gitleaks` pre-commit hook must stay enabled. If it blocks a commit, fix the
   content — do not bypass the hook.

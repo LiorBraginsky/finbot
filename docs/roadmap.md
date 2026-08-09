@@ -73,6 +73,11 @@ day of guessing whether it was Docker, the network, Telegram, Postgres or the pr
 *Do not defer this further. After Stage 2 there is real traffic and real corrections —
 the harness is cheapest and most useful exactly then.*
 
+*This is also the first stage where an unattended loop earns its place: the stopping
+criterion is numeric (metrics stop improving), so an agent can iterate on prompts and
+model choice without supervision. Autonomy follows gate quality, not the other way
+round.*
+
 ---
 
 ## ⬜ Stage 4 — Receipt photos

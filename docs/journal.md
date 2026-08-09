@@ -18,11 +18,27 @@ reason something was abandoned. The diff is already in git — do not restate it
 Rules: maximum five lines per entry. One entry per unit of work, not per commit.
 Author is an agent role (`architect`, `worker`, `reviewer`, `doc-curator`) or `lior`.
 
+An entry may carry one optional block, and only when there is something to teach:
+
+```markdown
+## Learning notes
+Three or four sentences: what was chosen, what it was chosen over, and why.
+```
+
+That block is how work reaches the owner without stopping it — see
+`.claude/orchestration.md` → `## Escalation`. It does not count against the five lines.
+
 Current state is *derived*, not stored: stage statuses live in `docs/roadmap.md`, and
 the most recent entry below says where work stopped. There is no STATE file to fall out
 of date.
 
 ---
+
+## 2026-08-09 · stage 0 · lior
+**Did:** switched the substrate to autonomous operation — auto-merge on green gates, plan no longer a checkpoint, escalation split into BLOCK (stop) and TEACH (a `## Learning notes` block that informs without stopping)
+**Hit:** unattended merge moves all the weight onto the gates, and there are none yet — so the substrate now requires any stage that cannot be verified mechanically to bring its own verification
+**Next:** Stage 0, executed end to end without checkpoints
+**Open:** an unattended loop over the plan is deferred to Stage 3, where the stopping criterion is numeric
 
 ## 2026-08-09 · stage 0 · lior
 **Did:** vendored the four agent definitions into `.claude/agents/` and rewrote the orchestration substrate around the sections the agents actually parse
