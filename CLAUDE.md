@@ -62,7 +62,9 @@ compared against the previous version with `python -m evals.run` before it ships
 
 ## Git
 
-- Agents may commit in this repository.
+- Agents may commit — on a stage branch (`stage-N-<slug>`), never on `main`.
+- Merging is the owner's call. Stop at "PR ready, gates green, review clean".
+  Full rules in `.claude/orchestration.md` → `## Ownership / STOP`.
 - Never `--force`, never `--no-verify`, never amend a pushed commit.
 - The `gitleaks` pre-commit hook must stay enabled. If it blocks a commit, fix the
   content — do not bypass the hook.

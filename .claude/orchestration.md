@@ -43,8 +43,27 @@ From Stage 3 onward, one more gate: any change to a prompt or a model requires
 chain on trivial changes is overhead; running it per stage gives both discipline and a
 clean point to stop for a month and come back.
 
-Anything smaller than a stage — a typo, a one-file fix, a doc edit — is done directly,
-with no chain.
+**The roadmap is the decomposition.** Stages are already scoped, ordered and given
+done-criteria. Do not re-decompose them; there is no parallelism to exploit here, and a
+second breakdown would only drift from the first.
+
+## How much process
+
+Not every stage deserves the same ceremony.
+
+| Scope | Flow |
+|---|---|
+| Smaller than a stage — typo, one-file fix, docs | Directly. No chain. |
+| Mechanical stage with no open decisions (0, 1.5) | `worker` straight from the roadmap, then gates and a journal entry. No architect, no reviewer. |
+| Stage with real design content (1, 2, 3, 4, 5) | Full chain. |
+
+Two standing exceptions to the full chain:
+
+- **`doc-curator` runs on demand, not by default.** Invoke it only when the architect
+  flagged `## ADR worthy: yes`. When a stage produced no decision, its output is two
+  lines — roadmap status and a journal entry — and the worker writes them.
+- **`reviewer` is not skipped.** It is the cheapest feedback channel in the project, and
+  it catches the "works, but not idiomatic" class that gates do not.
 
 ## The chain
 
@@ -58,16 +77,24 @@ with no chain.
 Every role appends one journal entry when done: five lines maximum, English, newest at
 the top of `docs/journal.md`.
 
-## Commits
+## Ownership / STOP
 
-**The worker is explicitly authorized to commit in this repository.** Pushing is the
-owner's call unless stated otherwise for a given stage.
+- **Branch per stage:** `stage-N-<slug>`. `main` stays green.
+- **The worker is explicitly authorized to commit** on a stage branch.
+- **Merging is not the chain's to do.** Stop at "PR ready, gates green, review clean"
+  and hand back to the owner. Never merge, never push to `main` directly.
+- Never `--force`, never `--no-verify`, never amend a pushed commit.
+- The `gitleaks` pre-commit hook stays enabled; if it fires, fix the content rather than
+  bypassing it. Enable hooks once per clone: `git config core.hooksPath .githooks`.
+- Message style: `feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`.
 
-Never `--force`, never `--no-verify`, never amend a pushed commit. The `gitleaks`
-pre-commit hook stays enabled; if it fires, fix the content rather than bypassing it.
-Enable hooks once per clone: `git config core.hooksPath .githooks`.
+## Process state
 
-Message style: `feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`.
+- **Plans: `docs/plans/stage-N-<slug>.md`, committed.** Not gitignored, unlike the
+  orchestrator's default. A plan is part of the record that makes a three-month pause
+  survivable, and it is the artefact the owner reviews before any code is written.
+- Journal entries go to `docs/journal.md`; stage status to `docs/roadmap.md`. There is no
+  separate handoff or todo file — see ADR-0010.
 
 ## Escalation
 
@@ -80,11 +107,14 @@ Stop and ask rather than guess when:
 Contradicting an ADR is allowed — but it requires a superseding ADR, not a silent
 deviation.
 
-## Agents
+## Team
 
-`.claude/agents/` holds four project-local agent definitions: `architect`, `worker`,
-`reviewer`, `doc-curator`. They are generic and project-agnostic — everything specific
-to this project is in this file and in `## Truth`.
+Generic roles, no project-scoped names. `.claude/agents/` holds four project-local
+definitions: `architect`, `worker`, `reviewer`, `doc-curator`. They are project-agnostic
+— everything specific to this project is in this file and in `## Truth`.
+
+There is no project-specific orchestrator skill here. The generic `/orchestrate` skill is
+the entry point, subject to `## How much process` above.
 
 Two things to know:
 
