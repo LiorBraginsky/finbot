@@ -82,7 +82,12 @@ pytest
 The integration suite starts a real, throwaway Postgres via `testcontainers`, so a
 running Docker daemon is required. **These tests fail rather than skip when Docker is
 unavailable — by design:** a skipped DB test in a project that auto-merges on green
-gates is a green gate that proves nothing.
+gates is a green gate that proves nothing. The suite must also be deterministic rather
+than merely usually green — on an auto-merging branch, an intermittent failure either
+blocks merges at random or teaches people to re-run until it passes, and either way
+"green" stops carrying information — which is why `tests/conftest.py` disables
+testcontainers' Ryuk sidecar rather than leaving its known startup race for someone to
+re-run past (see the comment there).
 
 ### Running the stack
 

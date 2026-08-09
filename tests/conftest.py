@@ -17,6 +17,28 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from testcontainers.community.postgres import PostgresContainer
 
+# Ryuk, testcontainers' resource-reaper sidecar, has its own startup race, not
+# an environment flake: Reaper._create_instance() (testcontainers/core/
+# container.py) calls .waiting_for(...) only *after* .start() has already
+# returned, so start() never actually waits for Ryuk's "Started!" log line,
+# and the very next line asks Docker for Ryuk's port mapping before Docker
+# has always finished registering it — intermittently raising
+# "ConnectionError: Port mapping for container ... and port 8080 is not
+# available". Confirmed from a full traceback rooted in exactly
+# Reaper.get_instance() -> _create_instance() -> get_exposed_port(8080), not
+# assumed. It recurred 1-in-3 to 1-in-5 runs against this unchanged suite.
+# Disabling Ryuk removes the racing container entirely; TESTCONTAINERS_
+# RYUK_DISABLED is read lazily on the first container start and cached for
+# the process (see testcontainers.core.config.TestcontainersConfiguration.
+# ryuk_disabled), not at import time, so setting it here — after the import,
+# before any fixture runs — is early enough.
+# Cost: Ryuk is what force-removes this session's throwaway Postgres
+# container if the test process is killed hard (SIGKILL, OOM, power loss).
+# Without it, a hard kill leaks that container; every other exit path (pass,
+# fail, Ctrl-C) still runs `with PostgresContainer(...)`'s __exit__, which
+# calls .stop() itself.
+os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
+
 
 @pytest.fixture(scope="session")
 def postgres_url() -> Iterator[str]:
