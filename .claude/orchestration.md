@@ -19,8 +19,11 @@ claim contradicts them, they win.
    abandoned.
 
 **There is no `lint-rules/` directory in this project.** The executable technical
-standard is the `ruff` and `mypy` configuration in `pyproject.toml`. Treat it as binding
-in the same way — not advisory.
+standard is the `ruff` and `mypy` configuration in `pyproject.toml`, **plus the
+rule-enforcing tests under `tests/`** — `tests/unit/test_layering.py` enforces
+`CLAUDE.md` rule 3, and `tests/integration/test_schema_matches_models.py` enforces
+migration/model agreement. Neither rule is expressible in ruff or mypy. Treat all of it
+as binding, not advisory.
 
 ## Gates
 
@@ -31,6 +34,13 @@ ruff check . && ruff format --check .
 mypy src/
 pytest
 ```
+
+**`pytest` requires a running Docker daemon** — the integration suite starts a real
+Postgres, and those tests **fail rather than skip** when Docker is absent. That is
+deliberate (ADR-0012): a skipped database test on a branch that merges unattended is a
+green gate proving nothing. If they fail for want of Docker, start Docker. **Do not add
+`skipif`, and do not add a rerun-until-green plugin** — an intermittent gate trains the
+habit that destroys it.
 
 From Stage 3 onward, one more gate: any change to a prompt or a model requires
 `python -m evals.run` before and after, with both results recorded in the journal entry.
