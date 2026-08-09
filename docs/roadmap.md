@@ -8,7 +8,7 @@ the model is any good.
 
 ---
 
-## 🚧 Stage 0 — Skeleton
+## ✅ Stage 0 — Skeleton
 
 Infrastructure only. **No LLM anywhere in this stage.**
 
@@ -21,9 +21,11 @@ Infrastructure only. **No LLM anywhere in this stage.**
 
 **Done when:** the bot answers `/ping` from the VPS and messages land in the table.
 
-*Software complete (package, schema, bot, tests). Remaining: Hetzner VPS provisioning,
-deployment, and the `pg_dump` cron — all blocked on owner-side prerequisites, see
-`docs/plans/stage-0-skeleton.md` → Owner prerequisites.*
+*Closed 2026-08-09, verified in production: `/ping` answered from the VPS, five messages
+from two whitelisted senders persisted, `count(*) == count(distinct telegram_update_id)`.
+Daily `pg_dump` on cron, restore never yet exercised. **One item remains open: the dump
+lives on the same host as the database**, so it survives a bad `DELETE` but not a dead
+server. Off-site copy is the first thing to fix outside a stage.*
 
 *Why separate: if infrastructure and model land together, the first failure costs half a
 day of guessing whether it was Docker, the network, Telegram, Postgres or the prompt.*

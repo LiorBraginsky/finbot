@@ -34,6 +34,12 @@ of date.
 
 ---
 
+## 2026-08-09 · stage 0 · lior
+**Did:** deployed to a Hetzner CX23 in Frankfurt and verified in production — `/ping` answered, five messages from two whitelisted senders persisted, `count(*) == count(distinct telegram_update_id)`; daily `pg_dump` on cron. Stage 0 closed.
+**Hit:** Telegram's privacy-mode change does not apply to groups the bot has already joined — the bot must be removed and re-added, otherwise `getUpdates` stays empty and looks like a token problem
+**Next:** stage 1 (text → expense) — needs an OpenRouter key with a spend limit set before any model call
+**Open:** the dump sits on the same host as the database; an off-site copy is still missing, and no restore has been exercised
+
 ## 2026-08-09 · stage 0 · worker
 **Did:** package skeleton, users/messages schema, aiogram long polling with allowlist and dedup, docker image + compose stack, real-Postgres test harness; also closed the two pytest deprecation warnings (`testcontainers.community.postgres`, alembic `path_separator = os`)
 **Hit:** spec §4/§7 claim Telegram redelivers unacknowledged updates, but aiogram advances the polling offset before handlers finish — see ADR-0011; two more plan deviations went unrecorded until reviewed: the schema-drift guard needed a named exclusion for `message_kind`'s type-bound CHECK constraint (Alembic can't reflect it symmetrically), and ruff's Markdown exclusion had to generalize from `docs` to `*.md`, since its formatter reformats fenced python blocks in any Markdown file; and the harness itself went red about one run in three until testcontainers' Ryuk sidecar — which races its own port lookup — was disabled, making the gate deterministic (ADR-0012)
