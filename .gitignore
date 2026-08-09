@@ -1,0 +1,49 @@
+# --- secrets ---------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# --- real household data (never in a public repo) --------------------------
+# Real evaluation cases are never files: they are queried from Postgres.
+# evals/golden/ holds hand-written synthetic cases only, and is committed.
+*.dump
+*.sql.gz
+backups/
+
+# --- media downloaded from Telegram ----------------------------------------
+tmp/
+media/
+*.ogg
+*.oga
+*.jpg
+*.jpeg
+*.png
+!docs/**/*.png
+
+# --- agent / editor local state --------------------------------------------
+.claude/settings.local.json
+.claude/sessions/
+.serena/
+.superpowers/
+.idea/
+.vscode/
+
+# --- python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# --- node (web/, from stage 6) ---------------------------------------------
+node_modules/
+.next/
+.turbo/
+
+# --- os --------------------------------------------------------------------
+.DS_Store

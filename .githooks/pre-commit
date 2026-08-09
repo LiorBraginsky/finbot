@@ -1,0 +1,28 @@
+#!/bin/sh
+# Blocks commits containing anything that looks like a credential.
+#
+# .env protects one file. This protects every other one — a key pasted into code
+# "just to test", a password left in docker-compose.yml, a token echoed into a
+# README example. This repository is public, so a leaked key is exploited by
+# scanners within minutes of a push.
+#
+# Enable once after cloning:   git config core.hooksPath .githooks
+
+set -e
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+    echo "pre-commit: gitleaks is not installed."
+    echo
+    echo "  macOS:  brew install gitleaks"
+    echo "  other:  https://github.com/gitleaks/gitleaks#installing"
+    echo
+    echo "This repository is public. Commits are blocked until the scanner is available."
+    exit 1
+fi
+
+# gitleaks 8.19+ uses `git`; earlier versions use `protect`.
+if gitleaks git --help >/dev/null 2>&1; then
+    gitleaks git --staged --redact
+else
+    gitleaks protect --staged --redact
+fi
