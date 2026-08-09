@@ -36,7 +36,7 @@ of date.
 
 ## 2026-08-09 · stage 0 · worker
 **Did:** package skeleton, users/messages schema, aiogram long polling with allowlist and dedup, docker image + compose stack, real-Postgres test harness; also closed the two pytest deprecation warnings (`testcontainers.community.postgres`, alembic `path_separator = os`)
-**Hit:** spec §4/§7 claim Telegram redelivers unacknowledged updates, but aiogram advances the polling offset before handlers finish — see ADR-0011
+**Hit:** spec §4/§7 claim Telegram redelivers unacknowledged updates, but aiogram advances the polling offset before handlers finish — see ADR-0011; two more plan deviations went unrecorded until reviewed: the schema-drift guard needed a named exclusion for `message_kind`'s type-bound CHECK constraint (Alembic can't reflect it symmetrically), and ruff's Markdown exclusion had to generalize from `docs` to `*.md`, since its formatter reformats fenced python blocks in any Markdown file
 **Next:** stage 1 (text → expense); owner-side VPS, deploy and pg_dump cron still outstanding
 **Open:** at-least-once delivery needs its mechanism chosen at stage 1, where a lost write is a lost expense
 

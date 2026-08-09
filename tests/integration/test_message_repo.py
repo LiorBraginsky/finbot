@@ -64,7 +64,7 @@ async def test_get_or_create_is_idempotent_and_refreshes_display_name(
 
 
 async def test_kind_round_trips_as_lowercase_value(db_session: AsyncSession) -> None:
-    message = _message(kind=MessageKind.VOICE, raw_text=None, file_id="AwADBAADbXXXXXXXXXXXGBdw")
+    message = _message(kind=MessageKind.VOICE, raw_text=None, file_id="voice-file-id")
     user_id = await users.get_or_create(db_session, message.telegram_user_id, message.display_name)
 
     row_id = await messages.add_if_new(db_session, message, user_id)

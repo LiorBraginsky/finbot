@@ -35,11 +35,14 @@ target-version = "py312"
 src = ["src", "tests"]
 # migrations/versions: generated migration headers fight the formatter (see
 # CLAUDE.md rule notes in docs/plans/stage-0-skeleton.md 1.1).
-# docs: ruff's formatter also reformats fenced ```python blocks inside
-# Markdown by default; plan/ADR snippets are prose illustrating a decision,
-# not source the lint gate should own, and it would make `ruff format --check .`
-# permanently fail on every plan file that includes a code excerpt.
-extend-exclude = ["migrations/versions", "docs"]
+# *.md: ruff does not own Markdown. Its formatter reformats fenced ```python
+# blocks inside Markdown by default; plan/ADR snippets are prose illustrating
+# a decision, not source the lint gate should own. Excluding "docs" instead
+# of the extension would be both too broad (exempts any future .py file
+# placed under docs/ from lint) and too narrow (README.md and CLAUDE.md stay
+# latent failures the moment either gains a fenced python block) — stating
+# the rule by extension covers every Markdown file, wherever it lives.
+extend-exclude = ["migrations/versions", "*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "DTZ", "T20", "SIM", "RUF", "ASYNC", "S", "PT"]

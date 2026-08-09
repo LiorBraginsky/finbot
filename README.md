@@ -94,7 +94,7 @@ This builds the `bot` image (Python 3.12 + `ffmpeg`, needed from Stage 2 for voi
 notes), starts `postgres`, waits for it to be healthy, then runs `alembic upgrade head`
 before starting the bot. Postgres publishes no port — long polling needs no inbound
 connection at all, so there is nothing to expose on a public VPS. Inspect the database
-with `docker compose -f infra/docker-compose.yml exec postgres psql -U finbot -d finbot`.
+with `docker compose --env-file .env -f infra/docker-compose.yml exec postgres psql -U finbot -d finbot`.
 
 ## Data and privacy
 

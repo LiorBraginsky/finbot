@@ -33,12 +33,17 @@ def postgres_url() -> Iterator[str]:
 
 @pytest_asyncio.fixture
 async def db_session(postgres_url: str) -> AsyncIterator[AsyncSession]:
+    # Truncate before yielding, not after: pytest throws into this generator at
+    # the yield point on a failing test, which would skip a post-yield truncate
+    # inside this try and leave rows for the next test to trip over. Truncating
+    # first makes each test's starting state independent of how the previous
+    # one ended, including a previous truncate that never ran at all.
     engine = create_async_engine(postgres_url, pool_pre_ping=True)
     session = AsyncSession(engine, expire_on_commit=False)
     try:
-        yield session
         await session.execute(text("TRUNCATE messages, users RESTART IDENTITY CASCADE"))
         await session.commit()
+        yield session
     finally:
         await session.close()
         await engine.dispose()

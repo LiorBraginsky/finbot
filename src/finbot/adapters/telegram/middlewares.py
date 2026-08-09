@@ -3,6 +3,7 @@ handler matches. Registration order in ``main.build_dispatcher`` is execution
 order: reject strangers before opening a database session for them.
 """
 
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -57,11 +58,15 @@ class AllowlistMiddleware(BaseMiddleware):
 
 
 class DbSessionMiddleware(BaseMiddleware):
-    """Opens one session per update; rolls back and logs at ERROR on failure.
+    """Opens one session per update; logs at ERROR then rolls back on failure.
 
     Per ADR-0011, aiogram has already advanced the getUpdates offset by the
     time a handler raises, so the serialised update logged here is the only
-    remaining copy of a failed write.
+    remaining copy of a failed write. That guarantee only holds if the log
+    line is unconditional: logging before the rollback, and suppressing any
+    exception the rollback itself raises (e.g. Postgres being down, the exact
+    scenario ADR-0011 is about), means a broken connection can never swallow
+    the log line or replace the original exception.
     """
 
     def __init__(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
@@ -74,12 +79,13 @@ class DbSessionMiddleware(BaseMiddleware):
             try:
                 return await handler(event, data)
             except Exception:
-                await session.rollback()
                 logger.exception(
                     "failed to process update_id=%s: %s",
                     update.update_id,
                     update.model_dump_json(exclude_none=True),
                 )
+                with contextlib.suppress(Exception):
+                    await session.rollback()
                 raise
 
 
@@ -98,6 +104,7 @@ class PersistMessageMiddleware(BaseMiddleware):
 
         incoming = to_incoming(update_id=update.update_id, message=update.message)
         if incoming is None:
+            logger.info("ignored unsupported content in update_id=%s", update.update_id)
             return None
 
         session: AsyncSession = data["session"]
