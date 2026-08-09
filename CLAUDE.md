@@ -3,6 +3,10 @@
 Read `docs/vision.md` and the most recent entries in `docs/journal.md` before doing
 anything. They carry context that is not derivable from the code.
 
+For anything larger than a small fix, also read **`.claude/orchestration.md`** — it
+declares the authoritative documents, the gates, the roles, and how to resume this
+project after a long pause. It also works without subagents.
+
 ## What this project is
 
 A Telegram bot that converts speech, text and receipt photos into structured household

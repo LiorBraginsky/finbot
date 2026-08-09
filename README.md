@@ -58,6 +58,7 @@ Reports (`/day`, `/week`, `/month`) are plain SQL — no model involved.
 | [`docs/specs/`](docs/specs) | Frozen design documents |
 | [`docs/decisions/`](docs/decisions) | ADRs — why things are the way they are |
 | [`CLAUDE.md`](CLAUDE.md) | Conventions and gates for AI agents working in this repo |
+| [`.claude/orchestration.md`](.claude/orchestration.md) | How work moves: authoritative docs, gates, roles, resuming after a pause |
 
 ## Running it
 

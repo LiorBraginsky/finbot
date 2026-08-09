@@ -25,6 +25,12 @@ of date.
 ---
 
 ## 2026-08-09 · stage 0 · lior
+**Did:** vendored the four agent definitions into `.claude/agents/` and rewrote the orchestration substrate around the sections the agents actually parse
+**Hit:** the agents look up `## Truth` and `## Gates` by name, and the worker refuses to commit unless the substrate authorizes it explicitly — the first version had neither, so the chain would have stalled on its first run
+**Next:** unchanged — Stage 0
+**Open:** vendored agents are a frozen copy of the user-level ones; no mechanism keeps them in sync
+
+## 2026-08-09 · stage 0 · lior
 **Did:** design settled end to end — hosting, storage, modality routing, error taxonomy, eval approach; repo scaffolded with vision, roadmap, spec and ten ADRs
 **Hit:** OpenCode Zen has no speech-to-text models; switched to OpenRouter, which accepts audio inline and collapses transcription and extraction into one call
 **Next:** Stage 0 — VPS, docker compose, long polling, raw message persistence, no LLM
