@@ -34,7 +34,13 @@ Six choices, each of which later stages inherit without deciding again.
 
 `testcontainers` brings up `postgres:16-alpine` — the same major version as compose — once
 per session, runs `alembic upgrade head` against it, and hands the URL to the integration
-tests. `pytest` alone is sufficient; no human has to start anything first.
+tests. `pytest` alone is sufficient; no human has to start anything first. The per-test
+`db_session` fixture built on top of it truncates before yielding, not after as originally
+planned: pytest throws into a fixture's generator at the `yield` point when a test fails,
+so a truncate placed after `yield` inside a `try` is skipped on exactly that path, and rows
+leak into the next test. Every later stage that uses `db_session` inherits the resulting
+rule for free — a test's starting state cannot depend on how the previous test's teardown
+behaved.
 
 **SQLite in memory was rejected on principle, not on convenience.** `ON CONFLICT DO
 NOTHING` on a unique index is precisely the behaviour Stage 0 exists to prove, and SQLite
@@ -103,8 +109,8 @@ The review round taught what a rule-as-test must also prove about itself. The fi
 version could pass vacuously on a missing or empty directory, and it missed the relative
 import forms — including `from .. import adapters`, where the banned name is in
 `node.names` because `node.module` is `None`. The fix is now held in place by a
-table-driven test over all seven `ast.ImportFrom` / `ast.Import` shapes a banned target
-can take, with a control case that must **not** be flagged. A lint rule that only ever
+table-driven test over every AST shape a banned target can take, with two control cases
+that must **not** be flagged. A lint rule that only ever
 sees passing input is not known to work.
 
 ### 6. The gate must be deterministic, not merely usually green
