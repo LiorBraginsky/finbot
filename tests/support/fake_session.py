@@ -17,6 +17,7 @@ from aiogram.methods import (
     AnswerCallbackQuery,
     EditMessageReplyMarkup,
     EditMessageText,
+    GetFile,
     GetMe,
     GetUpdates,
     SendMessage,
@@ -24,7 +25,7 @@ from aiogram.methods import (
     TelegramMethod,
 )
 from aiogram.methods.base import TelegramType
-from aiogram.types import Chat, InlineKeyboardMarkup, Message, Update, User
+from aiogram.types import Chat, File, InlineKeyboardMarkup, Message, Update, User
 
 # The exact substring finbot.adapters.telegram.handlers._is_not_modified
 # matches on — this fake exists to let a test see the real Bot API's
@@ -43,9 +44,21 @@ _CANNED_CHAT = Chat(id=1, type="private")
 class FakeSession(BaseSession):
     """Records every outgoing Telegram API call instead of sending it."""
 
-    def __init__(self, *, scripted_updates: list[list[Update]] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        scripted_updates: list[list[Update]] | None = None,
+        voice_files: dict[str, bytes] | None = None,
+    ) -> None:
         super().__init__()
         self.requests: list[TelegramMethod[Any]] = []
+        # `Bot.download(file_id)` calls `GetFile` first (this fake reuses
+        # `file_id` verbatim as the returned `file_path`, since nothing here
+        # needs the distinction) and then `stream_content` on the URL that
+        # `file_path` builds — keyed by `file_id` so a test scripts one dict,
+        # not two. A `file_id` absent from this dict makes both steps fail,
+        # for a download-failure test (adapters.telegram.audio).
+        self._voice_files: dict[str, bytes] = dict(voice_files or {})
         # `SendMessage` returns a canned `Message` with an incrementing
         # `message_id`, so a test can assert `expenses.bot_message_id`
         # linkage without every sent message colliding on id=1.
@@ -118,6 +131,18 @@ class FakeSession(BaseSession):
             if not self._scripted_updates:
                 return cast(TelegramType, [])
             return cast(TelegramType, self._scripted_updates.pop(0))
+        if isinstance(method, GetFile):
+            if method.file_id not in self._voice_files:
+                raise TelegramBadRequest(method, "Bad Request: file not found")
+            # file_path == file_id: nothing downstream of this fake cares
+            # about the distinction, and stream_content below only needs a
+            # value it can look `_voice_files` back up by.
+            file = File(
+                file_id=method.file_id,
+                file_unique_id=f"{method.file_id}-unique",
+                file_path=method.file_id,
+            )
+            return cast(TelegramType, file)
         raise AssertionError(f"unexpected Telegram API call: {type(method).__name__}")
 
     async def stream_content(
@@ -128,5 +153,14 @@ class FakeSession(BaseSession):
         chunk_size: int = 65536,
         raise_for_status: bool = True,
     ) -> AsyncGenerator[bytes, None]:
-        raise NotImplementedError
-        yield b""
+        """Backs `Bot.download()` (`adapters.telegram.audio.download_voice`):
+        real aiogram builds `url` from `session.api.file_url(token,
+        file_path)`, always ending in `file_path` — `GetFile` above hands out
+        `file_path == file_id`, so the trailing path segment is exactly the
+        key `_voice_files` was scripted with.
+        """
+        file_id = url.rsplit("/", 1)[-1]
+        data = self._voice_files.get(file_id)
+        if data is None:
+            raise ConnectionError(f"fake download: no such file at {url!r}")
+        yield data
