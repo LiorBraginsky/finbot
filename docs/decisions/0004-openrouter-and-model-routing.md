@@ -1,6 +1,7 @@
 # ADR-0004 — OpenRouter as the single gateway, one model per modality
 
-**Date:** 2026-08-09 · **Status:** accepted
+**Date:** 2026-08-09 · **Status:** accepted (one Consequences line amended by
+[ADR-0015](0015-voice-always-converts-to-mp3.md))
 
 ## Context
 
@@ -39,7 +40,9 @@ that a collapsed pipeline would otherwise lose.
 - Providers that log or train on request data must be excluded in account and request
   settings before the first real message. This is household financial data.
 - Telegram sends voice as OGG/Opus while the documented format is OGG Vorbis. `ffmpeg`
-  conversion stays in the image as the fallback path.
+  conversion stays in the image — see
+  [ADR-0015](0015-voice-always-converts-to-mp3.md), which amends this line: Stage 2
+  converts every voice note unconditionally, not as a fallback after trying the original.
 
 ## Rejected
 

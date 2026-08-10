@@ -22,3 +22,4 @@ An ADR is never edited to change its decision. A new ADR supersedes it and says 
 | [0012](0012-stage-0-verification-strategy.md) | Stage-0 verification: a real Postgres in tests, Telegram through the dispatcher (amended by Stage 1) |
 | [0013](0013-messages-table-is-the-inbox.md) | The `messages` table is the inbox: acknowledge on durable write, process from the table |
 | [0014](0014-structured-output-and-the-evals-split.md) | Structured output under a derived schema; the model is measured in `evals/`, not in `pytest` |
+| [0015](0015-voice-always-converts-to-mp3.md) | Every voice note is converted to mp3, unconditionally — amends [0004](0004-openrouter-and-model-routing.md) |
