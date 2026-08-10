@@ -69,7 +69,7 @@ Verified means the file was read, or the API was fetched today and quoted.
    test that makes the Stage-0 bug class unmergeable.
 3. **R3 — Extraction.** One call, fixed Pydantic schema, `response_format` strict JSON
    schema derived from it, repair loop of at most two attempts (spec §4.3).
-4. **R4 — Twelve categories**, seeded by migration, injected into the prompt, enforced by a
+4. **R4 — Thirteen categories**, seeded by migration, injected into the prompt, enforced by a
    JSON-Schema `enum` — not by asking politely (ADR-0005 made mechanical).
 5. **R5 — Every call recorded** in `extractions` with `model_id` (from the response),
    `prompt_version`, `attempt`, `status`, `cost_usd`, `latency_ms`, `raw_response`.
@@ -244,7 +244,7 @@ only for production and for refreshing recorded fixtures.
 
 ## Decisions taken (do not re-open)
 
-**The twelve categories.** Slug is the stable identifier used in the prompt, the JSON-Schema
+**The thirteen categories.** Slug is the stable identifier used in the prompt, the JSON-Schema
 `enum`, `evals/golden/` and reports. The Ukrainian label is presentation and lives in the
 adapter; the description steers the model and lives in the prompt.
 
@@ -261,10 +261,17 @@ adapter; the description steers the model and lives in the prompt.
 | `subscriptions` | 📱 | Підписки | мобільний, стримінг, софт, хмара, абонементи |
 | `gifts` | 🎁 | Подарунки і донати | подарунки, донати на ЗСУ, благодійність |
 | `pets` | 🐾 | Тварини | корм, ветеринар, грумінг |
+| `hookah` | 💨 | Кальян | кальянна, тютюн, вугілля, обслуговування |
 | `other` | 🗂 | Інше | усе, що не підходить вище — **обовʼязковий fallback, не вигадувати нове** |
 
+`hookah` is narrower than its neighbours on purpose: the owner asked for it by name, which
+means the household spends on it often enough to want it visible in a report rather than
+absorbed into `dining_out`. `other` stays last in catalog order — the schema `enum` follows
+catalog order, and the fallback reading last is the one thing a reader should be able to
+rely on.
+
 Single source of truth: `src/finbot/core/categories/catalog.py`. The migration spells the
-twelve literally (migrations never import `finbot`), and
+thirteen literally (migrations never import `finbot`), and
 `tests/integration/test_categories_seed.py` asserts the seeded rows equal the catalog, so
 the two cannot drift.
 
@@ -324,7 +331,7 @@ Run `ruff format .` before committing; the gate is `--check`.
 ### Step 1 — Schema, categories, money rules
 
 **Deliverable:** the database is Stage-1-shaped; `Decimal` money round-trips through
-Postgres; the twelve categories are seeded and guarded; rule 2 is executable. Bot behaviour
+Postgres; the thirteen categories are seeded and guarded; rule 2 is executable. Bot behaviour
 unchanged.
 
 **Create**
@@ -403,7 +410,7 @@ class ExtractionStatus(StrEnum):          # exactly spec §5's three values
 class CategorySpec:
     slug: str; emoji: str; description: str
 
-CATALOG: Final[tuple[CategorySpec, ...]] = (...)   # the twelve above
+CATALOG: Final[tuple[CategorySpec, ...]] = (...)   # the thirteen above
 SLUGS: Final[frozenset[str]] = frozenset(c.slug for c in CATALOG)
 FALLBACK_SLUG: Final[str] = "other"
 ```
@@ -494,7 +501,7 @@ id). Cached per pipeline run, not globally.
 **1.9 `migrations/versions/0002_stage1_expenses.py`** — `revision = "0002"`,
 `down_revision = "0001"`. Hand-written; **must not import `finbot`**. Creates `categories`,
 alters `messages`, creates `extractions`, `expenses`, `corrections`, the indexes, and seeds
-the twelve categories with `op.bulk_insert` (`is_system=True`, `status='active'`,
+the thirteen categories with `op.bulk_insert` (`is_system=True`, `status='active'`,
 `created_by=None`). Enum columns spelled literally, matching 0001's style. `downgrade()`
 drops in reverse and removes the four `messages` columns.
 
@@ -522,7 +529,7 @@ would break every FK and every later test. Add a comment saying so.
   classic silent failure.
 - `status` round-trips as `"pending"`, not `"PENDING"`.
 
-**Commit:** `feat: stage 1 schema, twelve seeded categories, and executable numeric-money rules`
+**Commit:** `feat: stage 1 schema, thirteen seeded categories, and executable numeric-money rules`
 
 ---
 
@@ -669,7 +676,7 @@ properties; `amount` is `{"type": "number"}`; `category` is
 - recursively walk the emitted schema; **every** object node has `additionalProperties is
   False` and `sorted(required) == sorted(properties)`;
 - no `$ref` or `$defs` anywhere;
-- `category.enum` equals the twelve catalog slugs, in catalog order;
+- `category.enum` equals the thirteen catalog slugs, in catalog order;
 - a valid instance parses into `ExtractionResult`; an instance with an extra key is rejected
   by `extra="forbid"`, so the model and the wire schema agree in both directions.
 
@@ -921,7 +928,7 @@ class SetCategory(CallbackData, prefix="cat"):     # "cat:1234:7"
 **3.4 `render.py`** — Telegram-facing text, `parse_mode=None` throughout.
 
 `CATEGORY_LABELS: dict[str, str]` maps slug → Ukrainian label. A unit test asserts
-`set(CATEGORY_LABELS) == SLUGS`, so a thirteenth category cannot ship label-less.
+`set(CATEGORY_LABELS) == SLUGS`, so a fourteenth category cannot ship label-less.
 
 Confirmation, one message per incoming message (ADR-0007):
 
@@ -1128,7 +1135,7 @@ Together these two prove the guarantee end to end without a network.
 - a 🗑 callback through the **real dispatcher**: exactly one `AnswerCallbackQuery`, one
   `EditMessageText`, `expenses.deleted_at` set, one `corrections` row with `corrected_by`
   equal to the **tapper**;
-- a ✏️ callback: one `EditMessageReplyMarkup` carrying twelve category buttons;
+- a ✏️ callback: one `EditMessageReplyMarkup` carrying thirteen category buttons;
 - a `SetCategory` callback: `category_id` changed, one `corrections` row;
 - **a callback from a stranger: zero API calls and zero DB changes**;
 - the same 🗑 callback fed twice: still one `corrections` row, still deleted, and the second
