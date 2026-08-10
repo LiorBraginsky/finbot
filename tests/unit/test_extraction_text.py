@@ -8,10 +8,8 @@ from decimal import Decimal
 import pytest
 
 from finbot.core.categories.catalog import CATALOG
-from finbot.core.extraction.ports import LlmRequest
 from finbot.core.extraction.text import (
     ExtractionInvalidError,
-    build_repair_request,
     build_request,
     parse_content,
     resolve_dates,
@@ -91,25 +89,6 @@ def test_parse_content_preserves_decimal_amount_exactly() -> None:
     )
     result = parse_content(content)
     assert result.expenses[0].amount == Decimal("3200.89")
-
-
-def test_build_repair_request_appends_assistant_and_user_turns() -> None:
-    original = LlmRequest(
-        models=("a",),
-        messages=({"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}),
-        json_schema={"type": "object"},
-        schema_name="extraction_result",
-    )
-    repaired = build_repair_request(original, "bad content", "amount: required field missing")
-
-    assert repaired.messages[:2] == original.messages
-    assert repaired.messages[2] == {"role": "assistant", "content": "bad content"}
-    assert repaired.messages[3]["role"] == "user"
-    assert "amount: required field missing" in repaired.messages[3]["content"]
-    assert "No prose, no code fences" in repaired.messages[3]["content"]
-    assert repaired.models == original.models
-    assert repaired.json_schema == original.json_schema
-    assert repaired.schema_name == original.schema_name
 
 
 def test_resolve_dates_fills_null_with_today() -> None:
