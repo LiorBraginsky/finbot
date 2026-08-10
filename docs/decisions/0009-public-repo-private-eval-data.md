@@ -1,6 +1,7 @@
 # ADR-0009 — Public repository, private data stays in the database
 
-**Date:** 2026-08-09 · **Status:** accepted
+**Date:** 2026-08-09 · **Status:** accepted (a narrow exception carved out by
+[ADR-0016](0016-narrow-exception-for-owner-named-voice-samples.md))
 
 ## Context
 
@@ -57,7 +58,10 @@ README or a compose file.
 ## Rejected
 
 **Generating `evals/golden/private/` files from production** — a second copy of data that
-is already in Postgres, and one `.gitignore` mistake away from being public.
+is already in Postgres, and one `.gitignore` mistake away from being public. See
+[ADR-0016](0016-narrow-exception-for-owner-named-voice-samples.md) for the one narrow,
+owner-invoked exception carved out of this: explicitly named messages, pulled to a path
+outside the repository, never a bulk export and never inside the tree.
 **Private repository** — removes the whole concern, forfeits the portfolio value.
 **Excluding orchestration files from the push** — would hide exactly the process
 documentation needed to resume after a long pause.

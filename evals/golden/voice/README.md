@@ -24,13 +24,21 @@ Two ways to get audio here, in the order to try them:
    arrival regardless, so the exact source format does not matter). Save each
    under the filename `voice_v1.jsonl` expects for that case's `id`.
 
-2. **Pull your own past voice notes.** If you already sent voice messages to
-   the bot before this set existed, `python -m evals.pull_voice_samples`
-   downloads every `kind='voice'` message from Postgres into this directory,
-   named by message id — read that script's own docstring for what it needs
-   (`TELEGRAM_BOT_TOKEN`, `DATABASE_URL`). Rename the ones you want to keep
-   to match a case `id` in `voice_v1.jsonl`, and write the `expected*` fields
-   for them by hand from what you actually said.
+2. **Pull specific past voice notes.** If you already sent voice messages to
+   the bot before this set existed,
+   [ADR-0016](../../../docs/decisions/0016-narrow-exception-for-owner-named-voice-samples.md)
+   permits pulling *named* ones — never a bulk export, and never to a path
+   inside this repository:
+
+   1. Find the message ids you want, e.g.
+      `select id, created_at from messages where kind = 'voice' order by id desc;`
+   2. `python -m evals.pull_voice_samples --message-ids 1042,1043 --out ~/finbot-voice-samples`
+      (`--out` must resolve outside this repository — the script refuses
+      otherwise; needs `TELEGRAM_BOT_TOKEN` and `DATABASE_URL`).
+   3. Move the ones you want to keep from `~/finbot-voice-samples` into
+      *this* directory by hand, renamed to match a case `id` in
+      `voice_v1.jsonl`, and write that case's `expected*` fields from what
+      you actually said.
 
 Either way: after adding or changing a case here, listen back to it once and
 confirm `expected_transcript_contains` names substrings that really are in

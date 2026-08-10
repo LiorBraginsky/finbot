@@ -23,3 +23,4 @@ An ADR is never edited to change its decision. A new ADR supersedes it and says 
 | [0013](0013-messages-table-is-the-inbox.md) | The `messages` table is the inbox: acknowledge on durable write, process from the table |
 | [0014](0014-structured-output-and-the-evals-split.md) | Structured output under a derived schema; the model is measured in `evals/`, not in `pytest` |
 | [0015](0015-voice-always-converts-to-mp3.md) | Every voice note is converted to mp3, unconditionally — amends [0004](0004-openrouter-and-model-routing.md) |
+| [0016](0016-narrow-exception-for-owner-named-voice-samples.md) | A narrow, owner-invoked exception for pulling explicitly named voice samples outside the repo — amends [0009](0009-public-repo-private-eval-data.md) |
