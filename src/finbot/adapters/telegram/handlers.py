@@ -32,6 +32,7 @@ from typing import cast
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import (
     CallbackQuery,
@@ -102,6 +103,16 @@ def _message_ref(query: CallbackQuery) -> MaybeInaccessibleMessageUnion:
     return query.message
 
 
+def _is_not_modified(exc: TelegramBadRequest) -> bool:
+    """A redelivered tap re-sends an edit identical to the one already on
+    screen; Telegram answers 400 *"message is not modified"* for that,
+    which is success from this bot's point of view — the state the tap
+    wanted is already there. Anything else raised as `TelegramBadRequest`
+    is a real failure and must not be swallowed here.
+    """
+    return "message is not modified" in exc.message
+
+
 async def _rerender_group(
     *, bot: Bot, query: CallbackQuery, session: AsyncSession, message_id: int, tz: ZoneInfo
 ) -> None:
@@ -114,12 +125,20 @@ async def _rerender_group(
     lines = _to_lines(views)
     today = datetime.now(tz=tz).date()
     ref = _message_ref(query)
-    await bot.edit_message_text(
-        chat_id=ref.chat.id,
-        message_id=ref.message_id,
-        text=render_confirmation(lines, today=today),
-        reply_markup=confirmation_keyboard(lines),
-    )
+    try:
+        await bot.edit_message_text(
+            chat_id=ref.chat.id,
+            message_id=ref.message_id,
+            text=render_confirmation(lines, today=today),
+            reply_markup=confirmation_keyboard(lines),
+        )
+    except TelegramBadRequest as exc:
+        # A redelivered tap (e.g. a second identical 🗑 or category pick)
+        # re-renders the exact same text and keyboard as last time — not a
+        # failure, so it must not answer CALLBACK_FAILURE_REPLY for an
+        # operation that already succeeded.
+        if not _is_not_modified(exc):
+            raise
 
 
 def build_router(tz: ZoneInfo) -> Router:
@@ -188,9 +207,16 @@ def build_router(tz: ZoneInfo) -> Router:
                 callback_data.expense_id, CATALOG, category_ids
             )
             ref = _message_ref(query)
-            await bot.edit_message_reply_markup(
-                chat_id=ref.chat.id, message_id=ref.message_id, reply_markup=keyboard
-            )
+            try:
+                await bot.edit_message_reply_markup(
+                    chat_id=ref.chat.id, message_id=ref.message_id, reply_markup=keyboard
+                )
+            except TelegramBadRequest as exc:
+                # A redelivered ✏️ tap: the category keyboard is already on
+                # screen from the first tap, so this one is a no-op success,
+                # not a failure.
+                if not _is_not_modified(exc):
+                    raise
             await query.answer()
         except Exception:
             logger.exception("edit callback failed for expense_id=%s", callback_data.expense_id)

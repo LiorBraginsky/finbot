@@ -1,0 +1,14 @@
+{
+  "id": "gen-fixture-no-choices",
+  "provider": "OpenAI",
+  "model": "openai/gpt-5.6-luna",
+  "object": "chat.completion",
+  "created": 1754800005,
+  "choices": [],
+  "usage": {
+    "prompt_tokens": 400,
+    "completion_tokens": 0,
+    "total_tokens": 400,
+    "cost": 0.00003
+  }
+}

@@ -100,6 +100,16 @@ def upgrade() -> None:
             server_default="pending",
         ),
     )
+    # The server_default above makes every *pre-existing* row 'pending' too,
+    # and next_attempt_at's server_default (below) is now() — so without
+    # this, the first `alembic upgrade head` against a database that already
+    # has rows (Stage 0's production backlog) would make the drain loop
+    # claim every one of them on startup, call the model for messages sent
+    # days ago, and write expenses dated today. Everything that predates the
+    # inbox was already handled by Stage 0; 'skipped' is the honest value.
+    # Scoped to rows this statement's own transaction can see before the
+    # column existed on any of them, so a fresh, empty database is unaffected.
+    op.execute("UPDATE messages SET status = 'skipped'")
     op.add_column(
         "messages",
         sa.Column("attempts", sa.Integer(), nullable=False, server_default="0"),

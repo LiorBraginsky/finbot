@@ -11,12 +11,13 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from finbot.core.categories.catalog import CATALOG
-from finbot.core.extraction.pipeline import extract_and_store
-from finbot.core.extraction.ports import LlmError
+from finbot.core.extraction.pipeline import NO_RESPONSE_MODEL_ID, extract_and_store
+from finbot.core.extraction.ports import LlmError, LlmRequest, LlmResponse
 from finbot.core.models import ExtractionStatus, IncomingMessage, MessageKind, MessageStatus
 from finbot.repo import categories, messages, users
 from finbot.repo.models import Expense, Extraction, Message
@@ -76,7 +77,33 @@ async def _claimed_message(session: AsyncSession, raw_text: str) -> Message:
 
 
 async def _category_ids(session: AsyncSession) -> dict[str, int]:
-    return await categories.by_slug(session)
+    """Mirrors `runner.py::_process_claimed`'s own sequence: a read commits
+    too, so nothing is left open on `session` when the caller goes on to
+    call `extract_and_store` (whose own first act may be an LLM call, not a
+    write) — see `test_llm_call_does_not_run_inside_an_open_transaction`.
+    """
+    category_ids = await categories.by_slug(session)
+    await session.commit()
+    return category_ids
+
+
+class _TransactionObservingLlmClient(FakeLlmClient):
+    """Records whether `session` had an open transaction the instant
+    `complete()` was entered. An OpenRouter call can run for up to
+    `settings.llm_timeout_seconds` (docs/plans/stage-1-text-to-expense.md:
+    120s), and a transaction left open across it holds a connection
+    idle-in-transaction for that whole time — see
+    `test_llm_call_does_not_run_inside_an_open_transaction`.
+    """
+
+    def __init__(self, session: AsyncSession, *responses: str | LlmError) -> None:
+        super().__init__(*responses)
+        self._session = session
+        self.was_in_transaction: bool | None = None
+
+    async def complete(self, request: LlmRequest) -> LlmResponse:
+        self.was_in_transaction = self._session.in_transaction()
+        return await super().complete(request)
 
 
 async def test_two_items_produce_two_expenses_and_one_ok_extraction(
@@ -224,6 +251,57 @@ async def test_llm_error_records_a_failed_row_with_no_cost(db_session: AsyncSess
     assert row.cost_usd is None
     assert row.raw_response is not None
     assert row.raw_response["error"] == "boom"
+    # No response ever arrived, so there is no "model that actually served
+    # the request" to record — models[0] (the requested model) would be a
+    # plausible-looking lie in exactly the row a "which model errors on us"
+    # query would read.
+    assert row.model_id == NO_RESPONSE_MODEL_ID
+
+    db_session.expire_all()
+    refreshed = await db_session.get(Message, message_id)
+    assert refreshed is not None
+    assert refreshed.status == MessageStatus.PENDING
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    ["error_envelope_200", "no_choices", "null_content"],
+)
+async def test_a_malformed_200_records_a_failed_row_with_no_cost(
+    db_session: AsyncSession, fixture_name: str
+) -> None:
+    """Three realistic 200 responses `parse_response_body` used to let raise
+    `KeyError`/`IndexError`/`AttributeError` straight past `extract_and_store`
+    — neither `LlmError` nor `ExtractionInvalidError` — so a billed (or at
+    least attempted) call left no `extractions` row at all, breaking
+    CLAUDE.md rule 6. All three now surface as `LlmError`, so they take
+    exactly the same path as any other transport failure.
+    """
+    message = await _claimed_message(db_session, "хліб 50")
+    message_id = message.id
+    category_ids = await _category_ids(db_session)
+    llm = FakeLlmClient(_load_fixture(fixture_name))
+
+    outcome = await extract_and_store(
+        session=db_session,
+        message=message,
+        llm=llm,
+        catalog=CATALOG,
+        category_ids=category_ids,
+        today=_TODAY,
+        models=_MODELS,
+        max_attempts=2,
+        max_message_attempts=5,
+    )
+
+    assert outcome.status == ExtractionStatus.FAILED
+
+    extraction_rows = (await db_session.execute(select(Extraction))).scalars().all()
+    assert len(extraction_rows) == 1
+    row = extraction_rows[0]
+    assert row.status == ExtractionStatus.FAILED
+    assert row.cost_usd is None
+    assert row.model_id == NO_RESPONSE_MODEL_ID
 
     db_session.expire_all()
     refreshed = await db_session.get(Message, message_id)
@@ -353,3 +431,30 @@ async def test_occurred_at_in_the_future_clamps_to_today(db_session: AsyncSessio
 
     expense_rows = (await db_session.execute(select(Expense))).scalars().all()
     assert expense_rows[0].occurred_at == _TODAY
+
+
+async def test_llm_call_does_not_run_inside_an_open_transaction(db_session: AsyncSession) -> None:
+    """MAJOR 5 of the Stage 1 review: `categories.by_slug` (a SELECT)
+    autobegins a transaction on `session` just as readily as a write does,
+    and `repo/messages.py`'s own `claim_next` docstring promises the LLM
+    call never happens inside one — a promise that was prose only, with
+    nothing behind it, until `_category_ids` started committing right after
+    the read.
+    """
+    message = await _claimed_message(db_session, "хліб 50")
+    category_ids = await _category_ids(db_session)
+    llm = _TransactionObservingLlmClient(db_session, _load_fixture("ok_two_items"))
+
+    await extract_and_store(
+        session=db_session,
+        message=message,
+        llm=llm,
+        catalog=CATALOG,
+        category_ids=category_ids,
+        today=_TODAY,
+        models=_MODELS,
+        max_attempts=2,
+        max_message_attempts=5,
+    )
+
+    assert llm.was_in_transaction is False

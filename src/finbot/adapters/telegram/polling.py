@@ -19,6 +19,7 @@ keyword argument that changes this; the loop has to be replaced.
 """
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Final
@@ -62,16 +63,42 @@ async def run_polling(
     offset: int | None = None
     backoff = Backoff(backoff_config)
     while not stop.is_set():
-        try:
-            updates = await bot(
+        # Raced against `stop`, not just awaited directly: `docker stop`'s
+        # grace period (10s, infra/docker-compose.yml) is shorter than
+        # `poll_timeout` (25s), so without this a SIGTERM mid-poll would
+        # make `stop.is_set()` true but this call would still block up to
+        # `poll_timeout + 15`s — SIGKILL, not graceful shutdown, would be the
+        # *normal* shutdown path rather than the exceptional one.
+        get_updates_task = asyncio.ensure_future(
+            bot(
                 GetUpdates(offset=offset, timeout=poll_timeout, allowed_updates=ALLOWED_UPDATES),
                 request_timeout=poll_timeout + 15,
             )
-        except Exception:
-            logger.exception("getUpdates failed")
-            await backoff.asleep()
-            continue
-        backoff.reset()
+        )
+        stop_wait_task = asyncio.ensure_future(stop.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                {get_updates_task, stop_wait_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if get_updates_task not in done:
+                # stop fired first: abandon the long poll rather than wait
+                # it out.
+                get_updates_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await get_updates_task
+                break
+
+            try:
+                updates = get_updates_task.result()
+            except Exception:
+                logger.exception("getUpdates failed")
+                await backoff.asleep()
+                continue
+        finally:
+            if not stop_wait_task.done():
+                stop_wait_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await stop_wait_task
 
         try:
             for update in updates:
@@ -83,8 +110,18 @@ async def run_polling(
                     logger.exception("handler failed for update_id=%s", update.update_id)
         except PersistenceError:
             logger.exception("withholding offset; telegram will redeliver")
+            # backoff.reset() is deliberately *not* called on this path (see
+            # below): a repeated withhold must ramp up like any other
+            # failure, not stay pinned at min_delay.
             await backoff.asleep()
             continue  # offset NOT advanced
 
         if updates:
             offset = updates[-1].update_id + 1  # acknowledged only now
+        # Reset only now, after the batch is fully acknowledged — not right
+        # after a successful `getUpdates` (the bug this replaces): resetting
+        # earlier meant a PersistenceError, however many times in a row,
+        # always slept ~min_delay (Postgres down => ~3600 iterations/hour,
+        # each logging a full `update.model_dump_json()`, into the same disk
+        # Postgres needs to recover on).
+        backoff.reset()

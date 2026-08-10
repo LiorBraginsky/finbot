@@ -27,6 +27,7 @@ from evals.run import (
 from evals.scoring import ExpectedExpense, GoldenCase, load_golden_cases, render_table
 
 from finbot.core.extraction.ports import LlmError
+from finbot.core.money import loads_decimal
 from tests.support.fake_llm import FakeLlmClient
 
 _FIXTURES_DIR = Path(__file__).parents[1] / "fixtures" / "openrouter"
@@ -134,7 +135,11 @@ async def test_run_case_treats_a_transport_error_as_a_failed_case_with_no_cost()
 
     assert not score.schema_ok
     assert score.cost_usd is None
-    assert score.latency_ms == 0
+    # None, not 0: no response ever came back, so there is no real duration
+    # to report — 0 would make a timing-out model look like the fastest one
+    # in the very percentile (`aggregate`'s `latencies_ms`) that is supposed
+    # to catch that.
+    assert score.latency_ms is None
 
 
 async def test_run_case_tolerates_a_null_cost() -> None:
@@ -151,11 +156,16 @@ async def test_run_case_tolerates_a_null_cost() -> None:
     assert score.cost_usd is None
 
 
-async def test_run_case_writes_the_raw_response_body_when_save_raw_is_given(
+async def test_run_case_writes_the_raw_response_body_verbatim_when_save_raw_is_given(
     tmp_path: Path,
 ) -> None:
-    case = GoldenCase(case_id="empty-case", raw_text="купив хліб", expected=())
-    client = FakeLlmClient(_fixture("ok_empty"))
+    """Byte-for-byte the wire text, never a re-serialization through
+    `json.dumps(response.raw, default=str)` — which would have rendered the
+    fixture's `Decimal` cost as the *string* `"0.000123"`, corrupting the
+    very fixtures `--save-raw` exists to refresh.
+    """
+    case = GoldenCase(case_id="two-items-case", raw_text="хліб 50, таксі 200", expected=())
+    client = FakeLlmClient(_fixture("ok_two_items"))
 
     await run_case(
         client,
@@ -168,9 +178,11 @@ async def test_run_case_writes_the_raw_response_body_when_save_raw_is_given(
 
     written = list(tmp_path.glob("*.json"))  # noqa: ASYNC240 -- test-only, tmp_path is in-memory-fast
     assert len(written) == 1
-    assert written[0].name == "google_gemini-3.5-flash-lite__empty-case__1.json"
-    saved = json.loads(written[0].read_text(encoding="utf-8"))
-    assert saved["id"] == "gen-fixture-ok-empty"
+    assert written[0].name == "google_gemini-3.5-flash-lite__two-items-case__1.json"
+    saved_text = written[0].read_text(encoding="utf-8")
+    assert saved_text == _fixture("ok_two_items")
+    saved = loads_decimal(saved_text)
+    assert saved["usage"]["cost"] == Decimal("0.000123")
 
 
 async def test_run_case_does_not_write_anything_when_save_raw_is_none() -> None:

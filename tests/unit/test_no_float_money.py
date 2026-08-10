@@ -35,6 +35,14 @@ from pathlib import Path
 import pytest
 
 SRC_ROOT = Path(__file__).parents[2] / "src" / "finbot"
+# evals/ is not part of src/finbot, but it parses golden-set JSON and
+# OpenRouter response bodies (evals/scoring.py, evals/run.py) — the same
+# money-bearing JSON wire this rule exists to guard, just on a different
+# side of the layering boundary. Walking it too closes the gap the review
+# that added this line found: `evals/scoring.py`'s own `json.loads` had no
+# `parse_float=Decimal`, and nothing but a docstring promised its input was
+# always pre-quantized strings.
+EVALS_ROOT = Path(__file__).parents[2] / "evals"
 ALLOWED_FILES = frozenset({SRC_ROOT / "core" / "money.py"})
 
 
@@ -79,9 +87,14 @@ def _violations_in(path: Path) -> list[str]:
 
 def test_json_loads_always_uses_parse_float_decimal() -> None:
     assert SRC_ROOT.is_dir(), f"expected {SRC_ROOT} to exist; this check has nothing to scan"
+    assert EVALS_ROOT.is_dir(), f"expected {EVALS_ROOT} to exist; this check has nothing to scan"
 
-    paths = sorted(p for p in SRC_ROOT.rglob("*.py") if p not in ALLOWED_FILES)
-    assert paths, f"no .py files found under {SRC_ROOT}; this check would pass vacuously"
+    paths = sorted(
+        p for root in (SRC_ROOT, EVALS_ROOT) for p in root.rglob("*.py") if p not in ALLOWED_FILES
+    )
+    assert paths, (
+        f"no .py files found under {SRC_ROOT} or {EVALS_ROOT}; this check would pass vacuously"
+    )
 
     violations: list[str] = []
     for path in paths:

@@ -16,12 +16,13 @@ import pytest_asyncio
 from aiogram import Bot, Dispatcher
 from aiogram.methods import AnswerCallbackQuery, EditMessageReplyMarkup, EditMessageText
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from finbot.adapters.telegram.callbacks import ExpenseAction, SetCategory
 from finbot.adapters.telegram.main import build_dispatcher
 from finbot.core.models import IncomingMessage, MessageKind
 from finbot.repo import categories, expenses, messages, users
+from finbot.repo.engine import create_sessionmaker
 from finbot.repo.models import Correction, Expense
 from tests.support.fake_session import FakeSession
 from tests.support.updates import ALLOWED_USER_ID, STRANGER_USER_ID, callback_update
@@ -31,12 +32,13 @@ _OCCURRED_AT = date(2026, 8, 10)
 
 @pytest_asyncio.fixture
 async def dispatcher(postgres_url: str) -> AsyncIterator[Dispatcher]:
-    engine = create_async_engine(postgres_url, pool_pre_ping=True)
-    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
-    try:
-        yield build_dispatcher(sessionmaker, frozenset({ALLOWED_USER_ID}))
-    finally:
-        await engine.dispose()
+    # create_sessionmaker, not a hand-rolled create_async_engine: this file
+    # writes JSONB (`corrections.before`/`after`), and MINOR 13 of the Stage
+    # 1 review is exactly this divergence — a second, driftable engine
+    # without `json_serializer`, reintroducing the failure
+    # `tests/conftest.py`'s `db_session` fixture was fixed to remove.
+    sessionmaker = create_sessionmaker(postgres_url)
+    yield build_dispatcher(sessionmaker, frozenset({ALLOWED_USER_ID}))
 
 
 @pytest.fixture
@@ -207,9 +209,16 @@ async def test_redelivered_delete_callback_is_idempotent(
     await dispatcher.feed_raw_update(bot, update)  # exact redelivery, same update_id
 
     requests = cast(FakeSession, bot.session).requests
+    answers = [r for r in requests if isinstance(r, AnswerCallbackQuery)]
     # Both taps are answered — a redelivered callback must never leave the
     # client's "loading" spinner running.
-    assert sum(isinstance(r, AnswerCallbackQuery) for r in requests) == 2
+    assert len(answers) == 2
+    # MINOR 9 of the Stage 1 review: the second tap re-renders text and a
+    # keyboard identical to what the first tap already sent, so `FakeSession`
+    # answers it the way the real Bot API does — 400 "message is not
+    # modified" — and that must still read as success here, not
+    # CALLBACK_FAILURE_REPLY, for an operation that already fully succeeded.
+    assert [a.text for a in answers] == ["Видалив", "Видалив"]
 
     db_session.expire_all()
     expense = await db_session.get(Expense, expense_id)

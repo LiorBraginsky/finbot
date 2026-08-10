@@ -30,6 +30,14 @@ class LlmResponse:
     cost_usd: Decimal | None  # OpenRouter types usage.cost as nullable
     latency_ms: int
     raw: Mapping[str, Any]
+    # The untouched response body, exactly as the wire carried it — never
+    # `json.dumps(raw)`. `raw` has already been parsed once through
+    # `core.money.loads_decimal`, so re-serializing it with the stdlib's
+    # `default=str` renders every Decimal as a *string* (`0.000123` becomes
+    # `"0.000123"`), which is what corrupted `evals/run.py --save-raw`'s own
+    # fixture refreshes. Byte-for-byte is the only representation that can't
+    # lie about what the wire actually sent.
+    raw_text: str
 
 
 class LlmError(Exception):

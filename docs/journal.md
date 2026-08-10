@@ -35,6 +35,14 @@ of date.
 ---
 
 ## 2026-08-10 · stage 1 · worker
+**Did:** closed the Stage 1 review — migration now backfills pre-existing `messages` to `skipped` instead of replaying Stage 0's backlog; `parse_response_body` validates shape and raises `LlmError` on a malformed 200; the drain releases a crashed claim via a fresh session instead of leaving it `processing` forever; plus four MAJORs (backoff reset timing, an open read transaction across the LLM call, SIGTERM racing the long poll, `--save-raw` writing raw text verbatim) and six MINORs. Test count 197 -> 205.
+**Hit:** the crash-release fix needed a guard the finding didn't spell out — `extract_and_store` commits `messages.status` before `_process_claimed` ever calls Telegram, so unconditionally calling `schedule_retry` from the crash handler would have resurrected an already-`done` row and reprocessed it (double billing, duplicate expenses); the release now only touches a row still `processing`.
+**Next:** owner runs `python -m evals.run` against the five candidates and sets `MODEL_TEXT`/`MODEL_FALLBACKS`, closing Stage 1.
+**Open:** the lease-column alternative for Critical 3 is deferred to Stage 1.5, as is `fx_rate_date` on unconverted rows (MINOR 14, left untouched — plan-specified).
+
+---
+
+## 2026-08-10 · stage 1 · worker
 **Did:** Stage 1 end to end — money/category rules, versioned prompt and an OpenRouter client with a repair loop, inbox delivery with working inline buttons and SQL reports, and now the eleven-case golden set plus a runner (`python -m evals.run`) scoring five candidate models through that same production code path. Test count 163 -> 197.
 **Hit:** `qwen/qwen3.7-flash`, the cheapest candidate, was dropped after the live catalogue showed no `structured_outputs` support — `provider.require_parameters: true` would have left it zero eligible routes; separately, `aiohttp` raises the builtin `TimeoutError`, not a `ClientError` subclass, on total-timeout expiry.
 **Next:** the owner runs the evals against the five candidates with a real OpenRouter key, chooses `MODEL_TEXT`/`MODEL_FALLBACKS`, and Stage 1 closes.

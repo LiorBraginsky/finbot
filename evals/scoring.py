@@ -57,7 +57,12 @@ class CaseScore:
     category_exact: bool
     date_exact: bool
     cost_usd: Decimal | None
-    latency_ms: int
+    # None only for a transport failure (LlmError): no response ever came
+    # back, so there is no real duration to record — 0 would silently make
+    # a timing-out model look like the fastest one, and criterion 3
+    # tie-breaks on p95. A schema-invalid response still has a real
+    # latency and keeps it.
+    latency_ms: int | None
 
 
 @dataclass(frozen=True)
@@ -114,18 +119,33 @@ def load_golden_cases(path: Path) -> list[GoldenCase]:
         stripped = line.strip()
         if not stripped:
             continue
-        payload: dict[str, Any] = json.loads(stripped)
-        expected = tuple(
-            ExpectedExpense(
-                item=item["item"],
-                amount=Decimal(item["amount"]),
-                category=item["category"],
-                occurred_offset_days=int(item["occurred_offset_days"]),
+        payload: dict[str, Any] = json.loads(stripped, parse_float=Decimal)
+        expected_items: list[ExpectedExpense] = []
+        for item in payload["expected"]:
+            # CLAUDE.md rule 2 applies to a hand-written fixture as much as
+            # to a wire response: a bare JSON number here would parse fine
+            # today but re-opens exactly the float-money hole `parse_float`
+            # exists to close the moment someone edits this file by hand.
+            # A raise, not a bare `assert` (S101; also stripped by `python
+            # -O`), mirrors core.extraction.pipeline's own convention.
+            if not isinstance(item["amount"], str):
+                msg = (
+                    f"{path}: golden case {payload['id']!r} amount must be a JSON string, "
+                    f"never a bare number, got {item['amount']!r}"
+                )
+                raise TypeError(msg)
+            expected_items.append(
+                ExpectedExpense(
+                    item=item["item"],
+                    amount=Decimal(item["amount"]),
+                    category=item["category"],
+                    occurred_offset_days=int(item["occurred_offset_days"]),
+                )
             )
-            for item in payload["expected"]
-        )
         cases.append(
-            GoldenCase(case_id=payload["id"], raw_text=payload["input"], expected=expected)
+            GoldenCase(
+                case_id=payload["id"], raw_text=payload["input"], expected=tuple(expected_items)
+            )
         )
     return cases
 
@@ -175,7 +195,9 @@ def score_case(
     )
 
 
-def failed_case_score(case_id: str, *, cost_usd: Decimal | None, latency_ms: int) -> CaseScore:
+def failed_case_score(
+    case_id: str, *, cost_usd: Decimal | None, latency_ms: int | None
+) -> CaseScore:
     """The response never became a usable `ExtractionResult`: a transport
     failure (`LlmError`) or a schema violation (`ExtractionInvalidError`).
     Every metric is a miss — there is nothing to compare.
@@ -202,7 +224,7 @@ def aggregate(model: str, scores: list[CaseScore]) -> ModelResult:
         category_exact=sum(score.category_exact for score in scores),
         date_exact=sum(score.date_exact for score in scores),
         costs=tuple(score.cost_usd for score in scores if score.cost_usd is not None),
-        latencies_ms=tuple(score.latency_ms for score in scores),
+        latencies_ms=tuple(score.latency_ms for score in scores if score.latency_ms is not None),
     )
 
 

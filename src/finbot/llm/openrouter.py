@@ -49,15 +49,34 @@ def parse_response_body(text: str, *, latency_ms: int) -> LlmResponse:
     `LlmResponse`. Shared verbatim between `OpenRouterClient.complete()` and
     `tests/support/fake_llm.py`'s `FakeLlmClient`, so a change to cost or
     model-id extraction cannot pass in tests while failing in production.
+
+    A 200 response is not a guarantee of this shape: a provider error can
+    come back wrapped in a 200 (`{"error": {...}}`, no `choices` at all), a
+    route can return `{"choices": []}`, and a refusal or a reasoning-only
+    generation can leave `message.content` `null`. Each of those used to
+    raise `KeyError`/`IndexError`/`AttributeError` straight out of this
+    function — none of which `core.extraction.pipeline.extract_and_store`
+    catches as `LlmError` or `ExtractionInvalidError` — so the call was
+    billed (or at least attempted) with no `extractions` row ever written,
+    breaking CLAUDE.md rule 6. Raising `LlmError` here instead, with the
+    body itself as `raw`, makes "the response made no sense" the record.
     """
     body = loads_decimal(text)
+    try:
+        model_id = body["model"]
+        content = body["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LlmError(f"malformed OpenRouter response body: {exc}", raw=body) from exc
+    if not isinstance(content, str):
+        raise LlmError(f"OpenRouter response content was not a string (got {content!r})", raw=body)
     usage = body.get("usage") or {}
     return LlmResponse(
-        model_id=body["model"],
-        content=body["choices"][0]["message"]["content"],
+        model_id=model_id,
+        content=content,
         cost_usd=usage.get("cost"),
         latency_ms=latency_ms,
         raw=body,
+        raw_text=text,
     )
 
 

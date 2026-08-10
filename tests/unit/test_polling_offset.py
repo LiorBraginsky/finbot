@@ -12,6 +12,7 @@ import pytest
 from aiogram import Bot
 from aiogram.methods import GetUpdates
 from aiogram.types import Update
+from aiogram.utils import backoff as backoff_module
 from aiogram.utils.backoff import BackoffConfig
 
 from finbot.adapters.telegram.errors import PersistenceError
@@ -107,6 +108,88 @@ async def test_a_non_persistence_error_still_advances_the_offset_past_the_batch(
     # not wedge the household's bot.
     assert fed == [21, 23]
     assert bot.offsets_used[1] == updates[-1].update_id + 1
+
+
+async def test_repeated_persistence_errors_ramp_up_the_backoff_not_pinned_at_min_delay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MAJOR 4: `backoff.reset()` used to run right after every successful
+    `getUpdates`, before the batch was ever acknowledged — so a
+    `PersistenceError`, however many times in a row, always slept ~1s
+    (`min_delay`) instead of ramping up like any other repeated failure.
+    Patches `aiogram.utils.backoff`'s own `asyncio.sleep` (not this module's)
+    to record the delays `Backoff.asleep()` actually requests, without
+    spending real seconds on them.
+    """
+    delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(backoff_module.asyncio, "sleep", fake_sleep)
+
+    stop = asyncio.Event()
+    updates = [_update(1)]
+    calls = {"n": 0}
+
+    class _AlwaysRedeliveredBot:
+        async def __call__(
+            self, method: GetUpdates, request_timeout: int | None = None
+        ) -> list[Update]:
+            calls["n"] += 1
+            if calls["n"] > 4:
+                stop.set()
+                return []
+            return updates
+
+    async def feed(update: Update) -> None:
+        raise PersistenceError("durable write failed")
+
+    # Deterministic: jitter=0.0 makes normalvariate(mu, 0) return mu exactly,
+    # so the four delays are exactly 1.0, 2.0, 4.0, 8.0 if (and only if)
+    # reset() is never called between them.
+    real_shaped_backoff = BackoffConfig(min_delay=1.0, max_delay=60.0, factor=2.0, jitter=0.0)
+
+    await run_polling(
+        bot=cast(Bot, _AlwaysRedeliveredBot()),
+        feed=feed,
+        stop=stop,
+        poll_timeout=0,
+        backoff_config=real_shaped_backoff,
+    )
+
+    assert delays == [1.0, 2.0, 4.0, 8.0]
+
+
+async def test_stop_mid_poll_returns_promptly_without_waiting_for_getupdates() -> None:
+    """MAJOR 6: `stop` must win a race against a `getUpdates` call that has
+    not returned yet — `docker stop`'s default grace period (10s) is shorter
+    than `poll_timeout` (25s), so without this a SIGTERM mid-poll would make
+    `stop.is_set()` true while `run_polling` kept blocking on the long poll
+    regardless, turning SIGKILL into the *normal* shutdown path.
+    """
+    stop = asyncio.Event()
+    started = asyncio.Event()
+
+    class _NeverRespondingBot:
+        async def __call__(
+            self, method: GetUpdates, request_timeout: int | None = None
+        ) -> list[Update]:
+            started.set()
+            await asyncio.sleep(3600)  # longer than any timeout below
+            return []  # pragma: no cover -- never reached
+
+    async def feed(update: Update) -> None:
+        pass
+
+    task = asyncio.create_task(
+        run_polling(bot=cast(Bot, _NeverRespondingBot()), feed=feed, stop=stop, poll_timeout=25)
+    )
+    await started.wait()
+    stop.set()
+
+    # If `stop` did not race the poll, this would hang for 3600s instead.
+    await asyncio.wait_for(task, timeout=1.0)
 
 
 @pytest.fixture(autouse=True)

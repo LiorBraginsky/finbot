@@ -24,13 +24,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import sys
 from collections.abc import Sequence
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
 from zoneinfo import ZoneInfo
 
 import aiohttp
@@ -103,18 +101,22 @@ def _raw_filename(model: str, case_id: str, repeat_index: int) -> str:
     return f"{slug}__{case_id}__{repeat_index + 1}.json"
 
 
-def _save_raw(save_raw: Path, model: str, case_id: str, repeat_index: int, raw: Any) -> None:
+def _save_raw(save_raw: Path, model: str, case_id: str, repeat_index: int, raw_text: str) -> None:
     """A plain, synchronous write — kept out of `run_case` so an async
     function never calls a `pathlib.Path` method directly (ASYNC240). Only
     used with `--save-raw`, an owner-run refresh of `tests/fixtures/openrouter/`
     (docs/plans/stage-1-text-to-expense.md's owner prerequisite 6), never in
     the normal scoring path.
+
+    Writes `raw_text` — the untouched wire body — verbatim, never
+    `json.dumps(response.raw, ...)`: `response.raw` is already parsed
+    through `core.money.loads_decimal`, so re-serializing it with
+    `default=str` would render every `Decimal` (e.g. `usage.cost`) as a
+    *string*, corrupting the very fixtures this flag exists to refresh.
     """
     save_raw.mkdir(parents=True, exist_ok=True)
     raw_path = save_raw / _raw_filename(model, case_id, repeat_index)
-    raw_path.write_text(
-        json.dumps(raw, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8"
-    )
+    raw_path.write_text(raw_text, encoding="utf-8")
 
 
 async def run_case(
@@ -135,10 +137,10 @@ async def run_case(
         response = await client.complete(request)
     except LlmError as exc:
         logger.warning("model %s errored on case %s: %s", model, case.case_id, exc)
-        return failed_case_score(case.case_id, cost_usd=None, latency_ms=0)
+        return failed_case_score(case.case_id, cost_usd=None, latency_ms=None)
 
     if save_raw is not None:
-        _save_raw(save_raw, model, case.case_id, repeat_index, response.raw)
+        _save_raw(save_raw, model, case.case_id, repeat_index, response.raw_text)
 
     try:
         result = parse_content(response.content)

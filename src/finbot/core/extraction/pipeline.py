@@ -52,6 +52,14 @@ logger = logging.getLogger(__name__)
 _RETRY_BASE_SECONDS = 30
 _RETRY_CAP_SECONDS = 30 * 60
 
+# LlmError means no response body ever arrived, so there is no "model that
+# actually served the request" to record — recording `models[0]` (the
+# requested model, never the served one) would read as a real value in
+# exactly the place a "which model errors on us" query would look. A
+# sentinel says plainly that no model ever responded, rather than lying
+# with a plausible-looking model id.
+NO_RESPONSE_MODEL_ID = "no-response"
+
 
 @dataclass(frozen=True)
 class ExtractionOutcome:
@@ -65,11 +73,16 @@ def _elapsed_ms(started: float) -> int:
     return int((time.perf_counter() - started) * 1000)
 
 
-def _backoff_seconds(processing_rounds: int) -> float:
+def backoff_seconds(processing_rounds: int) -> float:
     """`30 * 2**(rounds-1)` seconds, capped at 30 minutes. `processing_rounds`
     is `messages.attempts`, which `claim_next` has already incremented to at
     least 1 before this function runs; `max(..., 1)` only guards a test that
     calls this on an unclaimed message.
+
+    Public (no leading underscore): `adapters/telegram/runner.py`'s drain
+    loop calls this too, to release a message `_process_claimed` crashed on
+    with the same backoff a repair-loop exhaustion would use — one retry
+    schedule, not two that could quietly drift apart.
     """
     exponent = max(processing_rounds, 1) - 1
     # int(...): `int ** int` is typed `Any` in typeshed (a negative exponent
@@ -108,7 +121,7 @@ async def extract_and_store(
             await extractions_repo.record(
                 session,
                 message_id=message.id,
-                model_id=models[0],
+                model_id=NO_RESPONSE_MODEL_ID,
                 prompt_version=PROMPT_VERSION_TEXT,
                 attempt=attempt,
                 status=ExtractionStatus.FAILED,
@@ -120,7 +133,7 @@ async def extract_and_store(
                 session,
                 message.id,
                 error=str(exc),
-                delay_seconds=_backoff_seconds(message.attempts),
+                delay_seconds=backoff_seconds(message.attempts),
                 max_attempts=max_message_attempts,
             )
             await session.commit()
@@ -192,7 +205,7 @@ async def extract_and_store(
         session,
         message.id,
         error=last_error,
-        delay_seconds=_backoff_seconds(message.attempts),
+        delay_seconds=backoff_seconds(message.attempts),
         max_attempts=max_message_attempts,
     )
     await session.commit()

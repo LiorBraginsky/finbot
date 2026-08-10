@@ -12,6 +12,7 @@ from typing import Any, cast
 
 from aiogram import Bot
 from aiogram.client.session.base import BaseSession
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import (
     AnswerCallbackQuery,
     EditMessageReplyMarkup,
@@ -22,7 +23,17 @@ from aiogram.methods import (
     TelegramMethod,
 )
 from aiogram.methods.base import TelegramType
-from aiogram.types import Chat, Message, Update, User
+from aiogram.types import Chat, InlineKeyboardMarkup, Message, Update, User
+
+# The exact substring finbot.adapters.telegram.handlers._is_not_modified
+# matches on — this fake exists to let a test see the real Bot API's
+# behaviour for a redelivered, identical edit, not a synthetic stand-in for
+# it.
+_NOT_MODIFIED_MESSAGE = (
+    "Bad Request: message is not modified: specified new message content "
+    "and reply markup are exactly the same as a current content and reply "
+    "markup of the message"
+)
 
 _CANNED_USER = User(id=1, is_bot=True, first_name="finbot", username="finbot_test_bot")
 _CANNED_CHAT = Chat(id=1, type="private")
@@ -45,6 +56,14 @@ class FakeSession(BaseSession):
         # than from a second, driftable fake.
         self._scripted_updates: list[list[Update]] = list(scripted_updates or [])
         self.get_updates_offsets_used: list[int | None] = []
+        # The last text/markup this fake actually sent for each edited
+        # message id — how it reproduces Telegram's real 400 "message is
+        # not modified" for a redelivered tap that re-renders identically
+        # (finbot.adapters.telegram.handlers._rerender_group / start_edit).
+        # Without this, that response never happens here, and the
+        # idempotency it forces the handler to handle is never exercised.
+        self._last_edit_text: dict[int, str | None] = {}
+        self._last_edit_markup: dict[int, InlineKeyboardMarkup | None] = {}
 
     async def close(self) -> None:
         return None
@@ -72,7 +91,24 @@ class FakeSession(BaseSession):
             return cast(TelegramType, self._next_canned_message())
         if isinstance(method, AnswerCallbackQuery):
             return cast(TelegramType, True)
-        if isinstance(method, (EditMessageText, EditMessageReplyMarkup)):
+        if isinstance(method, EditMessageText):
+            message_id = method.message_id
+            if message_id is not None:
+                if (
+                    message_id in self._last_edit_text
+                    and self._last_edit_text[message_id] == method.text
+                ):
+                    raise TelegramBadRequest(method, _NOT_MODIFIED_MESSAGE)
+                self._last_edit_text[message_id] = method.text
+            return cast(TelegramType, self._next_canned_message())
+        if isinstance(method, EditMessageReplyMarkup):
+            message_id = method.message_id
+            if message_id is not None:
+                if message_id in self._last_edit_markup and (
+                    self._last_edit_markup[message_id] == method.reply_markup
+                ):
+                    raise TelegramBadRequest(method, _NOT_MODIFIED_MESSAGE)
+                self._last_edit_markup[message_id] = method.reply_markup
             return cast(TelegramType, self._next_canned_message())
         if isinstance(method, GetUpdates):
             self.get_updates_offsets_used.append(method.offset)
