@@ -45,12 +45,14 @@ day of guessing whether it was Docker, the network, Telegram, Postgres or the pr
 
 *Software complete: extraction, the thirteen categories, the confirmation/report flow, and
 the eleven-case golden set with a runner (`python -m evals.run`) are all built and covered
-by `pytest`. **One item remains, and it is the owner's:** running the evals against the
-five candidate models with a real OpenRouter key to choose `MODEL_TEXT` and
-`MODEL_FALLBACKS` — see `docs/plans/stage-1-text-to-expense.md` → Owner prerequisites and
-Decisions taken. Until that runs, `.env` has no model configured and the bot cannot
-extract anything. This stage's actual done-criterion — a week of real use — has not
-started either.*
+by `pytest`. **The eval ran** against the five candidate models on 2026-08-10 (33 calls
+each) and the model is chosen — `MODEL_TEXT=google/gemini-3.5-flash-lite`,
+`MODEL_FALLBACKS=google/gemini-3.6-flash`, both clearing the pre-registered `schema_ok`
+gate, the cheaper and faster of the two — see `docs/journal.md`'s top entry for the table,
+the choice, and the criterion that produced it. **What remains is not software:**
+deploying with these settings, and then the stage's actual done-criterion — a week of
+recording expenses by text without opening a spreadsheet — which no gate can prove and has
+not started yet. Not marked done until it has.*
 
 ---
 

@@ -34,6 +34,27 @@ of date.
 
 ---
 
+## 2026-08-10 · stage 1 · lior
+**Did:** ran the Stage 1 model eval — 11 golden cases × 3 repeats, 33 calls/model, five candidates — and set `MODEL_TEXT=google/gemini-3.5-flash-lite`, `MODEL_FALLBACKS=google/gemini-3.6-flash`.
+**Hit:** the pre-registered gate picked cleanly between the two survivors, but three of five candidates failed for reasons that have nothing to do with extraction quality — see Learning notes.
+**Next:** deploy with these model settings; Stage 1's real done-criterion — a week of recording expenses without opening a spreadsheet — starts now, and no gate can prove it.
+**Open:** the golden set saturated at 33/33 for both Gemini candidates, so it cannot show which is more accurate — Stage 3 needs harder cases before accuracy, rather than just cost and latency, can separate them.
+
+| model | schema_ok | count_exact | amount_exact | category_exact | date_exact | mean cost (USD) | p50 latency (ms) | p95 latency (ms) |
+|---|---|---|---|---|---|---|---|---|
+| mistralai/mistral-nemo | 15/33 | 15/33 | 15/33 | 15/33 | 15/33 | 0.000030 | 7049 | 37239 |
+| openai/gpt-oss-20b | 28/33 | 28/33 | 28/33 | 28/33 | 28/33 | 0.000074 | 3299 | 30546 |
+| openai/gpt-5.6-luna | 0/33 | 0/33 | 0/33 | 0/33 | 0/33 | n/a | 0 | 0 |
+| google/gemini-3.5-flash-lite | 33/33 | 33/33 | 33/33 | 33/33 | 33/33 | 0.000276 | 558 | 796 |
+| google/gemini-3.6-flash | 33/33 | 33/33 | 33/33 | 33/33 | 33/33 | 0.002408 | 1663 | 2101 |
+
+**Chosen:** `MODEL_TEXT=google/gemini-3.5-flash-lite`, `MODEL_FALLBACKS=google/gemini-3.6-flash`. Both Gemini rows cleared the `schema_ok ≥ 30/33` gate with perfect `amount_exact`/`count_exact`; criterion 3 takes the cheaper, which is also 3× faster (8.7× cheaper: $0.000276 vs $0.002408).
+
+## Learning notes
+Three findings, each a different failure kind, none about language understanding. `mistral-nemo` — infrastructure: HTTP 504 and 429, p95 37s, the cheapest model in the catalogue effectively unavailable, because narrowing the provider pool with `require_parameters: true` leaves thin models with few endpoints. `gpt-5.6-luna` — 404 on every call despite appearing in `GET /api/v1/models` with `structured_outputs`: presence in the catalogue is not availability to an account, so the pre-run check verified the wrong property. `gpt-oss-20b` — the endpoint advertises structured output but the model does not honour it: it returned a list where an object was required, and on `quantity-11` emitted an `analysis` field full of chain-of-thought plus junk keys (`'дві кави по 65': 1`); `require_parameters: true` constrains routing, not compliance, and only measurement separates the two. Separately, the eval saturated: eleven cases proved too easy for the strong models, so Stage 3 must add hard ones (mixed Ukrainian/Russian shorthand, clipped phrases, lending and repayment, several expenses with no separators), which the production corrections source will eventually supply.
+
+---
+
 ## 2026-08-10 · stage 1 · doc-curator
 **Did:** wrote ADR-0013 (the `messages` inbox, the ack-on-durable-write guarantee, the status machine and the conditional crash release — supersedes ADR-0011) and ADR-0014 (strict structured output under a hand-derived schema, cost and model id from the response body, the malformed-200 failure class, the pytest/evals split); appended a Stage 1 amendment to ADR-0012; pointed ADR-0011 and the index at 0013.
 **Hit:** eight production modules cite ADR-0013/0014 by name and neither existed, so every citation was dangling; `middlewares.py`'s `DbSessionMiddleware` docstring still asserts ADR-0011's premise as present fact, which `polling.py` falsified — reported to the worker rather than edited, since this role does not touch product code.
