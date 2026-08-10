@@ -293,10 +293,36 @@ clamped to `today` with a WARNING; past dates are accepted as given.
 empty array (evals count it), `messages.status='done'`, **no retry**, and one reply:
 `Не зрозумів, що саме витрачено. Напиши, будь ласка, що і скільки — наприклад: «хліб 50, таксі 200».`
 
-**Eval candidates and the criterion.** Compare four, including one deliberately expensive
+**Eval candidates and the criterion.** Compare five, including one deliberately expensive
 control so that "cheap is enough" is measured rather than assumed:
-`qwen/qwen3.7-flash`, `openai/gpt-5.6-luna`, `google/gemini-3.5-flash-lite`,
-`google/gemini-3.6-flash` (control).
+
+| model | $/M in | $/M out | ~cost per message |
+|---|---|---|---|
+| `mistralai/mistral-nemo` | 0.019 | 0.030 | $0.00002 |
+| `openai/gpt-oss-20b` | 0.030 | 0.130 | $0.00004 |
+| `openai/gpt-5.6-luna` | 0.100 | 0.600 | $0.00017 |
+| `google/gemini-3.5-flash-lite` | 0.300 | 2.500 | $0.00062 |
+| `google/gemini-3.6-flash` **(control)** | 1.500 | 7.500 | $0.00232 |
+
+**`qwen/qwen3.7-flash` was removed from this list.** It is the cheapest model in the
+catalogue, and it does **not** advertise `structured_outputs`. Because every request sends
+`provider.require_parameters: true`, OpenRouter would find no eligible endpoint for it —
+the cheapest candidate was unusable by construction. Checked against the live catalogue on
+2026-08-10.
+
+That check is now mechanical, and the `## Reality check` row marking `supported_parameters`
+as unverified is superseded: **the field exists** on model objects in `GET /api/v1/models`.
+Confirm any future candidate with:
+
+```bash
+curl -s https://openrouter.ai/api/v1/models \
+  | jq -r '.data[] | select(.supported_parameters // [] | index("structured_outputs")) | .id' \
+  | grep -x '<candidate-id>'
+```
+
+The spread between cheapest and control is ~116×, which is the point of including the
+control: without it, "the cheap one was good enough" is an assumption rather than a
+measurement. Five models × eleven cases is fifty-five calls — cents in total.
 
 The criterion, stated so it cannot be fudged after seeing the table:
 

@@ -32,7 +32,7 @@ day of guessing whether it was Docker, the network, Telegram, Postgres or the pr
 
 ---
 
-## ⬜ Stage 1 — MVP: text → expense
+## 🚧 Stage 1 — MVP: text → expense
 
 - Extraction from text with a fixed Pydantic schema, repair loop on invalid output
 - Fixed category list (~12), model must choose from it
@@ -43,6 +43,15 @@ day of guessing whether it was Docker, the network, Telegram, Postgres or the pr
 
 **Done when:** a week of recording expenses by text, without opening a spreadsheet.
 
+*Software complete: extraction, the thirteen categories, the confirmation/report flow, and
+the eleven-case golden set with a runner (`python -m evals.run`) are all built and covered
+by `pytest`. **One item remains, and it is the owner's:** running the evals against the
+five candidate models with a real OpenRouter key to choose `MODEL_TEXT` and
+`MODEL_FALLBACKS` — see `docs/plans/stage-1-text-to-expense.md` → Owner prerequisites and
+Decisions taken. Until that runs, `.env` has no model configured and the bot cannot
+extract anything. This stage's actual done-criterion — a week of real use — has not
+started either.*
+
 ---
 
 ## ⬜ Stage 1.5 — Currencies
@@ -52,6 +61,19 @@ day of guessing whether it was Docker, the network, Telegram, Postgres or the pr
 - Degrade to the last known rate and say so in the confirmation
 
 **Done when:** *"100 dollars for hosting"* is stored with a correct `amount_uah`.
+
+Two deferrals from Stage 1 land here, both recorded in ADR-0013 and the journal:
+
+- **`fx_rate_date` is currently set on rows that were never converted** (every UAH row
+  gets `fx_rate_date = occurred_at`, with `fx_rate = 1`). Stage 1.5's inevitable "which
+  rows used a stale or missing rate" query would otherwise find a year of rows claiming a
+  rate date they never had. Decide the honest value — `NULL` for unconverted rows — and
+  backfill.
+- **A lease column (`claimed_until`) instead of the crash-release guard.** One predicate
+  in `claim_next` would then cover a caught exception, a SIGKILL and a stalled worker
+  alike, replacing the startup `reset_processing` and the conditional release. Rejected
+  in Stage 1 as a migration plus a renewal loop for two users; revisit if a second worker
+  ever appears.
 
 ---
 

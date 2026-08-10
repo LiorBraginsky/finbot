@@ -1,0 +1,23 @@
+{
+  "id": "gen-fixture-ok-empty",
+  "provider": "Google",
+  "model": "google/gemini-3.5-flash-lite",
+  "object": "chat.completion",
+  "created": 1754800001,
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"expenses\": []}"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 398,
+    "completion_tokens": 6,
+    "total_tokens": 404,
+    "cost": 0.0000502
+  }
+}

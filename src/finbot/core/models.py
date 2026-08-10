@@ -15,6 +15,28 @@ class MessageKind(StrEnum):
     PHOTO = "photo"
 
 
+class MessageStatus(StrEnum):
+    """The inbox status machine (ADR-0013): `pending` messages are claimed by
+    the drain loop, `processing` while a claim is held, `done`/`failed` are
+    terminal, `skipped` is for commands and other content never sent to a
+    model.
+    """
+
+    PENDING = "pending"
+    PROCESSING = "processing"
+    DONE = "done"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class ExtractionStatus(StrEnum):
+    """Exactly spec §5's three values for `extractions.status`."""
+
+    OK = "ok"
+    INVALID_JSON = "invalid_json"
+    FAILED = "failed"
+
+
 class IncomingMessage(BaseModel):
     model_config = ConfigDict(frozen=True)
 

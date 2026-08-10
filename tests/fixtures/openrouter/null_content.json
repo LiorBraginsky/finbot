@@ -1,0 +1,24 @@
+{
+  "id": "gen-fixture-null-content",
+  "provider": "OpenAI",
+  "model": "openai/gpt-5.6-luna",
+  "object": "chat.completion",
+  "created": 1754800006,
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "refusal": "I can't help with that."
+      },
+      "finish_reason": "content_filter"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 400,
+    "completion_tokens": 5,
+    "total_tokens": 405,
+    "cost": 0.00002
+  }
+}

@@ -34,6 +34,39 @@ of date.
 
 ---
 
+## 2026-08-10 · stage 1 · doc-curator
+**Did:** wrote ADR-0013 (the `messages` inbox, the ack-on-durable-write guarantee, the status machine and the conditional crash release — supersedes ADR-0011) and ADR-0014 (strict structured output under a hand-derived schema, cost and model id from the response body, the malformed-200 failure class, the pytest/evals split); appended a Stage 1 amendment to ADR-0012; pointed ADR-0011 and the index at 0013.
+**Hit:** eight production modules cite ADR-0013/0014 by name and neither existed, so every citation was dangling; `middlewares.py`'s `DbSessionMiddleware` docstring still asserts ADR-0011's premise as present fact, which `polling.py` falsified — reported to the worker rather than edited, since this role does not touch product code.
+**Next:** Lior ratifies 0013 and 0014 (`proposed` -> `accepted`), at which point ADR-0011's status line flips to superseded.
+**Open:** `tests/fixtures/openrouter/README.md` lists five fixtures but the review round added three (`error_envelope_200`, `no_choices`, `null_content`); Stage 1.5 in the roadmap does not yet name ADR-0013's deferred lease-column alternative.
+
+---
+
+## 2026-08-10 · stage 1 · worker
+**Did:** closed the Stage 1 review — migration now backfills pre-existing `messages` to `skipped` instead of replaying Stage 0's backlog; `parse_response_body` validates shape and raises `LlmError` on a malformed 200; the drain releases a crashed claim via a fresh session instead of leaving it `processing` forever; plus four MAJORs (backoff reset timing, an open read transaction across the LLM call, SIGTERM racing the long poll, `--save-raw` writing raw text verbatim) and six MINORs. Test count 197 -> 205.
+**Hit:** the crash-release fix needed a guard the finding didn't spell out — `extract_and_store` commits `messages.status` before `_process_claimed` ever calls Telegram, so unconditionally calling `schedule_retry` from the crash handler would have resurrected an already-`done` row and reprocessed it (double billing, duplicate expenses); the release now only touches a row still `processing`.
+**Next:** owner runs `python -m evals.run` against the five candidates and sets `MODEL_TEXT`/`MODEL_FALLBACKS`, closing Stage 1.
+**Open:** the lease-column alternative for Critical 3 is deferred to Stage 1.5, as is `fx_rate_date` on unconverted rows (MINOR 14, left untouched — plan-specified).
+
+---
+
+## 2026-08-10 · stage 1 · worker
+**Did:** re-review round two — `parse_response_body`'s `try` now starts at `loads_decimal` itself (non-JSON bodies, a null model, `usage` not a mapping, `usage.cost` not a number all now raise `LlmError`, four new fixtures); `LlmError` carries an optional `cost_usd` that a malformed-but-partially-legible 200 still fills in, recorded by both `pipeline.py` and `evals/run.py`; `_release_crashed_claim` gets a pinning test proving the `!= PROCESSING` guard is load-bearing; `polling.py`'s backoff wait is now stop-aware (`_sleep_or_stop`), and `_release_crashed_claim`'s reply-send failure no longer misreports as a release failure. Test count 205 -> 211.
+**Hit:** deleting the `!= PROCESSING` guard alone left all 205 prior tests green — the first crash-recovery test always crashes before `extract_and_store` ever commits, so it can't see the guard; the new test crashes `render_confirmation` *after* a real `ok_two_items` commit, and does turn red without the guard (`done` flips to `pending`).
+**Next:** owner runs `python -m evals.run` against the five candidates and sets `MODEL_TEXT`/`MODEL_FALLBACKS`, closing Stage 1.
+**Open:** `tests/fixtures/openrouter/README.md` now lists five fixtures against eleven that exist (three from round one, four from round two) — compounding the doc-curator's own noted gap; the open-transaction test still observes `_category_ids`, a test helper, rather than the production sequence (reviewer's finding C, deferred to Stage 1.5 per instruction).
+
+---
+
+## 2026-08-10 · stage 1 · worker
+**Did:** Stage 1 end to end — money/category rules, versioned prompt and an OpenRouter client with a repair loop, inbox delivery with working inline buttons and SQL reports, and now the eleven-case golden set plus a runner (`python -m evals.run`) scoring five candidate models through that same production code path. Test count 163 -> 197.
+**Hit:** `qwen/qwen3.7-flash`, the cheapest candidate, was dropped after the live catalogue showed no `structured_outputs` support — `provider.require_parameters: true` would have left it zero eligible routes; separately, `aiohttp` raises the builtin `TimeoutError`, not a `ClientError` subclass, on total-timeout expiry.
+**Next:** the owner runs the evals against the five candidates with a real OpenRouter key, chooses `MODEL_TEXT`/`MODEL_FALLBACKS`, and Stage 1 closes.
+**Open:** whether the cheapest model clearing the `schema_ok` gate also holds `amount_exact`/`count_exact`, or the 116x-pricier control model earns its keep — that comparison is the eval run itself, still to be run.
+
+## Learning notes
+`core.money.loads_decimal`'s `parse_float=Decimal` is the entire distance between CLAUDE.md rule 2 and a float silently entering the ledger: plain `json.loads` parses `50.89` through the C float parser before `Decimal` ever sees it, so the guard has to intercept the JSON text itself, not the Python value that comes out of it. The JSON Schema sent to OpenRouter is hand-derived rather than taken from `ExpenseDraft.model_json_schema()`, because Pydantic's emitter produces `$defs`/`$ref` for nested models, omits `additionalProperties: false`, and types `Decimal` as `anyOf[number, string]` — none of which strict structured-output mode accepts — so the derivation is tested recursively rather than trusted. `provider.require_parameters: true` matters because structured-output support is a property of the *endpoint* actually serving a model, not of the model itself; without it, a request can silently route to a provider that ignores `response_format` and returns prose, which reads downstream as a bad model rather than bad routing. The processing round's ack is withheld only at the durable write in `messages`/`expenses` — never in a handler, never on an earlier step — because that write is the one point whose failure must make Telegram redeliver; acking anything upstream of it would let a crash between "read" and "write" lose the message for good.
+
 ## 2026-08-09 · stage 0 · lior
 **Did:** deployed to a Hetzner CX23 in Frankfurt and verified in production — `/ping` answered, five messages from two whitelisted senders persisted, `count(*) == count(distinct telegram_update_id)`; daily `pg_dump` on cron. Stage 0 closed.
 **Hit:** Telegram's privacy-mode change does not apply to groups the bot has already joined — the bot must be removed and re-added, otherwise `getUpdates` stays empty and looks like a token problem

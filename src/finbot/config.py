@@ -1,5 +1,7 @@
 """Application configuration, loaded from the environment / .env."""
 
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
 from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -18,12 +20,62 @@ class Settings(BaseSettings):
     database_url: str
     timezone: str = "Europe/Kyiv"
 
+    openrouter_api_key: SecretStr
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    model_text: str
+    # str, not list[str]: pydantic-settings JSON-decodes any complex-typed
+    # field straight from the environment, so a list[str] field would fail
+    # to parse "a,b" before any validator of ours ever ran. Comma-splitting
+    # by hand in the model_candidates property keeps the failure mode ours.
+    model_fallbacks: str = ""
+    llm_timeout_seconds: int = 60
+    max_extraction_attempts: int = 2
+    max_message_attempts: int = 5
+
     @property
     def allowed_user_ids(self) -> frozenset[int]:
         return frozenset(int(p) for p in self.telegram_allowed_user_ids.split(",") if p.strip())
+
+    @property
+    def model_candidates(self) -> tuple[str, ...]:
+        """`model_text` plus `model_fallbacks`, blanks stripped, in order —
+        the `models` list `llm/openrouter.py` sends on every request.
+        """
+        fallbacks = [part.strip() for part in self.model_fallbacks.split(",") if part.strip()]
+        return (self.model_text, *fallbacks)
+
+    @property
+    def tz(self) -> ZoneInfo:
+        return ZoneInfo(self.timezone)
 
     @model_validator(mode="after")
     def _require_non_empty_allowlist(self) -> "Settings":
         if not self.allowed_user_ids:
             raise ValueError("TELEGRAM_ALLOWED_USER_IDS must contain at least one numeric id")
+        return self
+
+    @model_validator(mode="after")
+    def _require_resolvable_timezone(self) -> "Settings":
+        try:
+            ZoneInfo(self.timezone)
+        except ZoneInfoNotFoundError as exc:
+            msg = f"TIMEZONE {self.timezone!r} does not resolve to a known zone"
+            raise ValueError(msg) from exc
+        return self
+
+    @model_validator(mode="after")
+    def _forbid_free_model_ids(self) -> "Settings":
+        # ":free" variants have the worst data policy and are hard
+        # rate-limited (see docs/plans/stage-1-text-to-expense.md's Reality
+        # check) — failing at startup beats discovering it from a 429 at
+        # 2 a.m. or, worse, silently training a provider on household data.
+        free_ids = [candidate for candidate in self.model_candidates if candidate.endswith(":free")]
+        if free_ids:
+            raise ValueError(f"model id(s) {free_ids} end in ':free', which this project bans")
+        return self
+
+    @model_validator(mode="after")
+    def _require_extraction_attempts_in_range(self) -> "Settings":
+        if not 1 <= self.max_extraction_attempts <= 3:
+            raise ValueError("MAX_EXTRACTION_ATTEMPTS must be between 1 and 3")
         return self

@@ -19,9 +19,14 @@ from finbot.repo.models import Base
 # It cannot make the same exclusion on the reflected side, since a type-bound
 # marker does not survive a round trip through the database. Left unfiltered,
 # every Enum(native_enum=False) column reports a permanent, spurious
-# "remove_constraint" diff. Excluding this one known constraint by name keeps
-# the guard meaningful for anything else that changes.
-_TYPE_BOUND_CHECK_CONSTRAINT_NAMES = frozenset({"message_kind"})
+# "remove_constraint" diff. Excluding these known constraints by name keeps
+# the guard meaningful for anything else that changes. `message_status` and
+# `extraction_status` (Stage 1) are the identical spurious diff as
+# `message_kind` (Stage 0) — same cause, one more Enum(native_enum=False)
+# column each.
+_TYPE_BOUND_CHECK_CONSTRAINT_NAMES = frozenset(
+    {"message_kind", "message_status", "extraction_status"}
+)
 
 
 def _ignore_type_bound_check_constraints(

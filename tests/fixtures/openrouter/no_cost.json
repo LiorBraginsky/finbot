@@ -1,0 +1,23 @@
+{
+  "id": "gen-fixture-no-cost",
+  "provider": "Qwen",
+  "model": "qwen/qwen3.7-flash",
+  "object": "chat.completion",
+  "created": 1754800004,
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"expenses\": [{\"item\": \"хліб\", \"amount\": 50, \"category\": \"groceries\", \"occurred_at\": null}]}"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 400,
+    "completion_tokens": 33,
+    "total_tokens": 433,
+    "cost": null
+  }
+}

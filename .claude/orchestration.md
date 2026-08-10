@@ -20,10 +20,21 @@ claim contradicts them, they win.
 
 **There is no `lint-rules/` directory in this project.** The executable technical
 standard is the `ruff` and `mypy` configuration in `pyproject.toml`, **plus the
-rule-enforcing tests under `tests/`** — `tests/unit/test_layering.py` enforces
-`CLAUDE.md` rule 3, and `tests/integration/test_schema_matches_models.py` enforces
-migration/model agreement. Neither rule is expressible in ruff or mypy. Treat all of it
-as binding, not advisory.
+rule-enforcing tests under `tests/`**. None of these rules is expressible in ruff or
+mypy, and each is binding in exactly the same way:
+
+| test | enforces |
+|---|---|
+| `tests/unit/test_layering.py` | `CLAUDE.md` rule 3 — `core` imports neither `adapters` nor `llm` |
+| `tests/unit/test_no_float_money.py` | rule 2 — no `json.loads` without `parse_float=Decimal` |
+| `tests/integration/test_schema_matches_models.py` | migration/model agreement |
+| `tests/integration/test_categories_seed.py` | the seeded categories equal the catalog |
+| `test_main.py::test_allowed_updates_matches_registered_handlers` | Telegram is asked for exactly the update types the router handles |
+| `test_main.py::test_no_global_error_handler_is_registered` | no `dp.errors` handler, which would void ADR-0013's delivery guarantee |
+
+**Do not delete or weaken one of these because it looks like an odd test.** Each replaces
+a lint rule this project cannot express, and each exists because the rule it guards was
+broken at least once.
 
 ## Gates
 

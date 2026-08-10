@@ -12,7 +12,8 @@ from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, Update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from finbot.adapters.telegram.mapping import to_incoming
+from finbot.adapters.telegram.errors import PersistenceError
+from finbot.adapters.telegram.mapping import sender_of, to_incoming
 from finbot.repo import messages, users
 
 logger = logging.getLogger(__name__)
@@ -37,10 +38,16 @@ def _require_update(event: TelegramObject) -> Update:
 class AllowlistMiddleware(BaseMiddleware):
     """Silently drops updates from anyone not in `allowed`.
 
-    Reads `event.message` and `message.from_user` directly rather than
-    `data["event_from_user"]`, so it does not depend on aiogram's internal
-    middleware ordering. No reply, no INFO log: silence is the design
-    (spec §7) — an "access denied" reply is an invitation to keep poking.
+    Uses `sender_of(update)` — for a `callback_query` that is the person who
+    TAPPED, never `callback_query.message.from_user` (the bot). Reads the
+    `Update` directly rather than `data["event_from_user"]`, so it does not
+    depend on aiogram's internal middleware ordering. No reply, no INFO log:
+    silence is the design (spec §7) — an "access denied" reply is an
+    invitation to keep poking.
+
+    On success, stashes the resolved sender in `data["sender"]` so handlers
+    (in particular callback handlers, which write `corrections.corrected_by`)
+    never have to re-derive it and risk the same trap.
     """
 
     def __init__(self, allowed: frozenset[int]) -> None:
@@ -48,12 +55,11 @@ class AllowlistMiddleware(BaseMiddleware):
 
     async def __call__(self, handler: Handler, event: TelegramObject, data: dict[str, Any]) -> Any:
         update = _require_update(event)
-        message = update.message
-        if message is None or message.from_user is None:
-            return None
-        if message.from_user.id not in self._allowed:
+        sender = sender_of(update)
+        if sender is None or sender.id not in self._allowed:
             return None
 
+        data["sender"] = sender
         return await handler(event, data)
 
 
@@ -95,12 +101,26 @@ class PersistMessageMiddleware(BaseMiddleware):
     Commits before calling the handler on purpose: spec §4 step 6, "write to
     the database before replying." Vacuous for `/ping`, load-bearing from
     Stage 1.
+
+    ``if update.message is None: pass through`` — Stage 0 instead returned
+    `None` here, which dropped every `callback_query` before it ever reached
+    a handler: the ✏️/🗑 taps did nothing, silently, for both household
+    members (docs/plans/stage-1-text-to-expense.md's Reality check). A
+    `callback_query` carries nothing this middleware persists — see
+    handlers.py's note on why taps are not written to `messages` — so
+    passing it through is the whole fix.
+
+    The durable write below is wrapped so that *only* its own failure raises
+    `PersistenceError`, the one exception `polling.run_polling` treats as
+    "withhold the offset, Telegram will redeliver" (ADR-0013). Anything a
+    handler later does — a callback body, a `sendMessage` — must not gain
+    that power, or one bad reply would wedge the household's bot forever.
     """
 
     async def __call__(self, handler: Handler, event: TelegramObject, data: dict[str, Any]) -> Any:
         update = _require_update(event)
         if update.message is None:
-            return None
+            return await handler(event, data)
 
         incoming = to_incoming(update_id=update.update_id, message=update.message)
         if incoming is None:
@@ -108,11 +128,15 @@ class PersistMessageMiddleware(BaseMiddleware):
             return None
 
         session: AsyncSession = data["session"]
-        user_id = await users.get_or_create(
-            session, incoming.telegram_user_id, incoming.display_name
-        )
-        row_id = await messages.add_if_new(session, incoming, user_id)
-        await session.commit()
+        try:
+            user_id = await users.get_or_create(
+                session, incoming.telegram_user_id, incoming.display_name
+            )
+            row_id = await messages.add_if_new(session, incoming, user_id)
+            await session.commit()
+        except Exception as exc:
+            msg = f"failed to durably persist update_id={update.update_id}"
+            raise PersistenceError(msg) from exc
 
         data["message_row_id"] = row_id
         data["is_duplicate"] = row_id is None

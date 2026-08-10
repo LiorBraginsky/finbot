@@ -1,0 +1,11 @@
+{"id": "single-01", "input": "хліб 50", "expected": [{"item": "хліб", "amount": "50.00", "category": "groceries", "occurred_offset_days": 0}]}
+{"id": "multi-02", "input": "хліб 50 і таксі 200", "expected": [{"item": "хліб", "amount": "50.00", "category": "groceries", "occurred_offset_days": 0}, {"item": "таксі", "amount": "200.00", "category": "transport", "occurred_offset_days": 0}]}
+{"id": "multi-03", "input": "кава 65, аптека 340, метро 16", "expected": [{"item": "кава", "amount": "65.00", "category": "dining_out", "occurred_offset_days": 0}, {"item": "аптека", "amount": "340.00", "category": "health", "occurred_offset_days": 0}, {"item": "метро", "amount": "16.00", "category": "transport", "occurred_offset_days": 0}]}
+{"id": "relative-date-04", "input": "вчора таксі 200", "expected": [{"item": "таксі", "amount": "200.00", "category": "transport", "occurred_offset_days": -1}]}
+{"id": "words-05", "input": "двісті гривень за таксі", "expected": [{"item": "таксі", "amount": "200.00", "category": "transport", "occurred_offset_days": 0}]}
+{"id": "russian-06", "input": "купил молоко 45 и хлеб 30", "expected": [{"item": "молоко", "amount": "45.00", "category": "groceries", "occurred_offset_days": 0}, {"item": "хлеб", "amount": "30.00", "category": "groceries", "occurred_offset_days": 0}]}
+{"id": "donation-07", "input": "донат на дрон 500", "expected": [{"item": "донат на дрон", "amount": "500.00", "category": "gifts", "occurred_offset_days": 0}]}
+{"id": "no-amount-08", "input": "купив хліб", "expected": []}
+{"id": "not-expense-09", "input": "яка сьогодні погода", "expected": []}
+{"id": "separators-10", "input": "заправка 1 250,50", "expected": [{"item": "заправка", "amount": "1250.50", "category": "transport", "occurred_offset_days": 0}]}
+{"id": "quantity-11", "input": "дві кави по 65", "expected": [{"item": "кава", "amount": "130.00", "category": "dining_out", "occurred_offset_days": 0}]}

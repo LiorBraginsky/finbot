@@ -12,6 +12,16 @@ services:
       interval: 5s
       retries: 10
     restart: unless-stopped
+    # Bounded, not the json-file driver's unbounded default: with Postgres
+    # down, polling.py's withhold-retry loop logs a full
+    # `update.model_dump_json()` traceback on every iteration, and that
+    # traffic lands on the same disk this container needs free space on to
+    # recover.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   bot:
     build:
@@ -24,6 +34,17 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    # docker stop's default grace period (10s) is shorter than
+    # polling.py's own poll_timeout (25s) — without this, SIGKILL, not a
+    # clean shutdown, is the *normal* stop path, and a kill between
+    # llm.complete() returning and the pipeline's commit re-claims and
+    # re-bills the message on the next start.
+    stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   pgdata:

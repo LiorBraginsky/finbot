@@ -18,5 +18,7 @@ An ADR is never edited to change its decision. A new ADR supersedes it and says 
 | [0008](0008-currency-conversion-at-write-time.md) | Convert currency at write time, store the rate |
 | [0009](0009-public-repo-private-eval-data.md) | Public repository, private evaluation data |
 | [0010](0010-journal-over-state-file.md) | Append-only journal instead of a state file |
-| [0011](0011-at-least-once-delivery-is-not-free.md) | At-least-once delivery is not free; the spec's redelivery claim is withdrawn |
-| [0012](0012-stage-0-verification-strategy.md) | Stage-0 verification: a real Postgres in tests, Telegram through the dispatcher |
+| [0011](0011-at-least-once-delivery-is-not-free.md) | At-least-once delivery is not free; the spec's redelivery claim is withdrawn — superseded by [0013](0013-messages-table-is-the-inbox.md) |
+| [0012](0012-stage-0-verification-strategy.md) | Stage-0 verification: a real Postgres in tests, Telegram through the dispatcher (amended by Stage 1) |
+| [0013](0013-messages-table-is-the-inbox.md) | The `messages` table is the inbox: acknowledge on durable write, process from the table |
+| [0014](0014-structured-output-and-the-evals-split.md) | Structured output under a derived schema; the model is measured in `evals/`, not in `pytest` |
