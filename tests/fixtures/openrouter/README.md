@@ -28,7 +28,7 @@ while failing against the real API.
 
 ### HTTP 200 with an envelope that is not what you expect
 
-These six are the third failure class, beside transport failure and schema
+These seven are the third failure class, beside transport failure and schema
 violation (ADR-0014 §6). Every one of them was a live escape at some point in
 Stage 1's review: the exception reached the drain instead of becoming an
 `LlmError`, so a **billed call left no `extractions` row** — breaking
