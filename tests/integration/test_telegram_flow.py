@@ -42,7 +42,12 @@ async def dispatcher(postgres_url: str) -> AsyncIterator[Dispatcher]:
         yield build_dispatcher(sessionmaker, frozenset({ALLOWED_USER_ID}))
     finally:
         async with sessionmaker() as session:
-            await session.execute(text("TRUNCATE messages, users RESTART IDENTITY CASCADE"))
+            # DELETE, not TRUNCATE, for users: see tests/conftest.py's
+            # db_session fixture for why TRUNCATE ... CASCADE here would
+            # silently wipe the migration-seeded `categories` table too, via
+            # its nullable `created_by` FK to `users.id`.
+            await session.execute(text("TRUNCATE messages RESTART IDENTITY CASCADE"))
+            await session.execute(text("DELETE FROM users"))
             await session.commit()
         await engine.dispose()
 

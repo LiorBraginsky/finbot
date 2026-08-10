@@ -2,10 +2,12 @@
 Postgres (see tests/conftest.py). No skipif on Docker availability.
 """
 
+from datetime import UTC, datetime, timedelta
+
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from finbot.core.models import IncomingMessage, MessageKind
+from finbot.core.models import IncomingMessage, MessageKind, MessageStatus
 from finbot.repo import messages, users
 from finbot.repo.models import Message, User
 
@@ -78,3 +80,184 @@ async def test_kind_round_trips_as_lowercase_value(db_session: AsyncSession) -> 
         text("SELECT kind FROM messages WHERE id = :id").bindparams(id=row_id)
     )
     assert raw_kind == "voice"
+
+
+async def test_add_if_new_sets_pending_for_plain_text(db_session: AsyncSession) -> None:
+    message = _message(raw_text="хліб 50")
+    user_id = await users.get_or_create(db_session, message.telegram_user_id, message.display_name)
+
+    row_id = await messages.add_if_new(db_session, message, user_id)
+    await db_session.commit()
+    assert row_id is not None
+
+    row = await db_session.get(Message, row_id)
+    assert row is not None
+    assert row.status == MessageStatus.PENDING
+
+
+async def test_add_if_new_sets_skipped_for_a_command(db_session: AsyncSession) -> None:
+    message = _message(raw_text="/ping")
+    user_id = await users.get_or_create(db_session, message.telegram_user_id, message.display_name)
+
+    row_id = await messages.add_if_new(db_session, message, user_id)
+    await db_session.commit()
+    assert row_id is not None
+
+    row = await db_session.get(Message, row_id)
+    assert row is not None
+    assert row.status == MessageStatus.SKIPPED
+
+
+async def test_add_if_new_sets_skipped_for_non_text_content(db_session: AsyncSession) -> None:
+    message = _message(kind=MessageKind.VOICE, raw_text=None, file_id="voice-file-id")
+    user_id = await users.get_or_create(db_session, message.telegram_user_id, message.display_name)
+
+    row_id = await messages.add_if_new(db_session, message, user_id)
+    await db_session.commit()
+    assert row_id is not None
+
+    row = await db_session.get(Message, row_id)
+    assert row is not None
+    assert row.status == MessageStatus.SKIPPED
+
+
+async def test_claim_next_returns_the_oldest_pending_row_and_increments_attempts(
+    db_session: AsyncSession,
+) -> None:
+    message = _message(raw_text="хліб 50")
+    user_id = await users.get_or_create(db_session, message.telegram_user_id, message.display_name)
+    row_id = await messages.add_if_new(db_session, message, user_id)
+    await db_session.commit()
+    assert row_id is not None
+
+    claimed = await messages.claim_next(db_session, datetime.now(UTC))
+    await db_session.commit()
+
+    assert claimed is not None
+    assert claimed.id == row_id
+    assert claimed.status == MessageStatus.PROCESSING
+    assert claimed.attempts == 1
+
+
+async def test_claim_next_returns_none_when_nothing_is_pending(db_session: AsyncSession) -> None:
+    claimed = await messages.claim_next(db_session, datetime.now(UTC))
+    assert claimed is None
+
+
+async def test_claim_next_ignores_rows_scheduled_in_the_future(db_session: AsyncSession) -> None:
+    message = _message(raw_text="хліб 50")
+    user_id = await users.get_or_create(db_session, message.telegram_user_id, message.display_name)
+    row_id = await messages.add_if_new(db_session, message, user_id)
+    await db_session.commit()
+    assert row_id is not None
+    await db_session.execute(
+        text("UPDATE messages SET next_attempt_at = :future WHERE id = :id").bindparams(
+            future=datetime.now(UTC) + timedelta(hours=1), id=row_id
+        )
+    )
+    await db_session.commit()
+
+    claimed = await messages.claim_next(db_session, datetime.now(UTC))
+
+    assert claimed is None
+
+
+async def test_mark_done_sets_status_done(db_session: AsyncSession) -> None:
+    message = _message(raw_text="хліб 50")
+    user_id = await users.get_or_create(db_session, message.telegram_user_id, message.display_name)
+    row_id = await messages.add_if_new(db_session, message, user_id)
+    await db_session.commit()
+    assert row_id is not None
+
+    await messages.mark_done(db_session, row_id)
+    await db_session.commit()
+    db_session.expire_all()  # force a fresh read past the identity map
+
+    row = await db_session.get(Message, row_id)
+    assert row is not None
+    assert row.status == MessageStatus.DONE
+
+
+async def test_mark_skipped_sets_status_skipped(db_session: AsyncSession) -> None:
+    message = _message(raw_text="хліб 50")
+    user_id = await users.get_or_create(db_session, message.telegram_user_id, message.display_name)
+    row_id = await messages.add_if_new(db_session, message, user_id)
+    await db_session.commit()
+    assert row_id is not None
+
+    await messages.mark_skipped(db_session, row_id)
+    await db_session.commit()
+    db_session.expire_all()  # force a fresh read past the identity map
+
+    row = await db_session.get(Message, row_id)
+    assert row is not None
+    assert row.status == MessageStatus.SKIPPED
+
+
+async def test_schedule_retry_reschedules_pending_when_under_max_attempts(
+    db_session: AsyncSession,
+) -> None:
+    message = _message(raw_text="хліб 50")
+    user_id = await users.get_or_create(db_session, message.telegram_user_id, message.display_name)
+    row_id = await messages.add_if_new(db_session, message, user_id)
+    await db_session.commit()
+    assert row_id is not None
+    await messages.claim_next(db_session, datetime.now(UTC))  # attempts -> 1
+    await db_session.commit()
+
+    before = datetime.now(UTC)
+    await messages.schedule_retry(
+        db_session, row_id, error="boom", delay_seconds=30, max_attempts=5
+    )
+    await db_session.commit()
+    db_session.expire_all()  # force a fresh read past the identity map
+
+    row = await db_session.get(Message, row_id)
+    assert row is not None
+    assert row.status == MessageStatus.PENDING
+    assert row.last_error == "boom"
+    assert row.next_attempt_at > before
+
+
+async def test_schedule_retry_marks_failed_once_max_attempts_reached(
+    db_session: AsyncSession,
+) -> None:
+    message = _message(raw_text="хліб 50")
+    user_id = await users.get_or_create(db_session, message.telegram_user_id, message.display_name)
+    row_id = await messages.add_if_new(db_session, message, user_id)
+    await db_session.commit()
+    assert row_id is not None
+    await messages.claim_next(db_session, datetime.now(UTC))  # attempts -> 1
+    await db_session.commit()
+
+    await messages.schedule_retry(
+        db_session, row_id, error="boom", delay_seconds=30, max_attempts=1
+    )
+    await db_session.commit()
+    db_session.expire_all()  # force a fresh read past the identity map
+
+    row = await db_session.get(Message, row_id)
+    assert row is not None
+    assert row.status == MessageStatus.FAILED
+    assert row.last_error == "boom"
+
+
+async def test_reset_processing_resets_processing_rows_and_returns_the_count(
+    db_session: AsyncSession,
+) -> None:
+    message = _message(raw_text="хліб 50")
+    user_id = await users.get_or_create(db_session, message.telegram_user_id, message.display_name)
+    row_id = await messages.add_if_new(db_session, message, user_id)
+    await db_session.commit()
+    assert row_id is not None
+    await messages.claim_next(db_session, datetime.now(UTC))
+    await db_session.commit()
+
+    reset_count = await messages.reset_processing(db_session)
+    await db_session.commit()
+    db_session.expire_all()  # force a fresh read past the identity map
+
+    assert reset_count == 1
+    row = await db_session.get(Message, row_id)
+    assert row is not None
+    assert row.status == MessageStatus.PENDING

@@ -1,10 +1,27 @@
-"""Persistence for finbot.repo.models.Message."""
+"""Persistence for finbot.repo.models.Message — the inbox (ADR-0013).
 
+None of these functions commit; the caller decides the transaction boundary.
+"""
+
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from finbot.core.models import IncomingMessage
+from finbot.core.models import IncomingMessage, MessageKind, MessageStatus
 from finbot.repo.models import Message
+
+
+def _initial_status(message: IncomingMessage) -> MessageStatus:
+    """Commands and non-text content never reach extraction — this is where
+    the Stage-0 plan's "filtering commands out of extraction is Stage 1's
+    job" lands. Everything else is a PENDING row the drain loop will claim.
+    """
+    is_plain_text = message.kind == MessageKind.TEXT and not (message.raw_text or "").startswith(
+        "/"
+    )
+    return MessageStatus.PENDING if is_plain_text else MessageStatus.SKIPPED
 
 
 async def add_if_new(session: AsyncSession, message: IncomingMessage, user_id: int) -> int | None:
@@ -23,9 +40,106 @@ async def add_if_new(session: AsyncSession, message: IncomingMessage, user_id: i
             kind=message.kind,
             raw_text=message.raw_text,
             file_id=message.file_id,
+            status=_initial_status(message),
         )
         .on_conflict_do_nothing(index_elements=[Message.telegram_update_id])
         .returning(Message.id)
     )
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
+
+
+async def claim_next(session: AsyncSession, now: datetime) -> Message | None:
+    """Atomically claim the oldest due `pending` message, or None.
+
+    One statement — `UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP
+    LOCKED) RETURNING *` — so the claim is atomic and the transaction stays
+    short: the LLM call never happens inside an open transaction. SKIP LOCKED
+    costs one clause and makes a second worker safe if one ever appears.
+    """
+    candidate = (
+        select(Message.id)
+        .where(Message.status == MessageStatus.PENDING, Message.next_attempt_at <= now)
+        .order_by(Message.id)
+        .limit(1)
+        .with_for_update(skip_locked=True)
+    )
+    stmt = (
+        update(Message)
+        .where(Message.id == candidate.scalar_subquery())
+        .values(status=MessageStatus.PROCESSING, attempts=Message.attempts + 1)
+        .returning(Message)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def mark_done(session: AsyncSession, message_id: int) -> None:
+    await session.execute(
+        update(Message).where(Message.id == message_id).values(status=MessageStatus.DONE)
+    )
+
+
+async def mark_skipped(session: AsyncSession, message_id: int) -> None:
+    await session.execute(
+        update(Message).where(Message.id == message_id).values(status=MessageStatus.SKIPPED)
+    )
+
+
+async def schedule_retry(
+    session: AsyncSession,
+    message_id: int,
+    *,
+    error: str,
+    delay_seconds: float,
+    max_attempts: int,
+) -> None:
+    """Reschedule a message for another processing round, or give up.
+
+    `messages.attempts` counts processing rounds and is incremented once per
+    round by `claim_next`, never here — this only decides the fate of the
+    *next* claim: another `pending` round after `delay_seconds`, or a
+    terminal `failed` once `attempts` has reached `max_attempts`.
+    """
+    message = await session.get(Message, message_id)
+    if message is None:
+        return
+
+    if message.attempts >= max_attempts:
+        await session.execute(
+            update(Message)
+            .where(Message.id == message_id)
+            .values(status=MessageStatus.FAILED, last_error=error)
+        )
+    else:
+        await session.execute(
+            update(Message)
+            .where(Message.id == message_id)
+            .values(
+                status=MessageStatus.PENDING,
+                next_attempt_at=datetime.now(UTC) + timedelta(seconds=delay_seconds),
+                last_error=error,
+            )
+        )
+
+
+async def reset_processing(session: AsyncSession) -> int:
+    """Reset every `processing` row back to `pending`.
+
+    Called once at startup, before the drain loop starts claiming rows —
+    correct only because deployment is single-node, single-replica
+    (ADR-0002); a multi-replica deployment could reset a row another replica
+    is still actively working on. Does not commit.
+    """
+    # .returning(Message.id) rather than .rowcount: AsyncSession.execute()
+    # types its return as the base Result[Any], which has no .rowcount —
+    # only the CursorResult subtype does, and mypy cannot know which one a
+    # given statement produces. Counting the returned ids is exactly as
+    # cheap and stays within the typed surface.
+    result = await session.execute(
+        update(Message)
+        .where(Message.status == MessageStatus.PROCESSING)
+        .values(status=MessageStatus.PENDING)
+        .returning(Message.id)
+    )
+    return len(result.scalars().all())

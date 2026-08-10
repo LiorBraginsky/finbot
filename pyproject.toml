@@ -15,6 +15,10 @@ dependencies = [
     "alembic>=1.14,<2",
     "pydantic>=2.9,<3",
     "pydantic-settings>=2.6,<3",
+    # Already installed transitively via aiogram; declared here because
+    # Stage 1's OpenRouter client (Step 2) uses it directly, promoting it
+    # from transitive to declared. No new package enters the image.
+    "aiohttp>=3.10,<4",
 ]
 
 [project.optional-dependencies]
@@ -50,6 +54,11 @@ ignore = ["S104"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106"]
+# The category catalog's descriptions are Ukrainian prose, not identifiers —
+# RUF001's Latin-homoglyph check exists to catch confusable characters in
+# code that could hide a security issue, which does not apply to a private
+# bot's own category text in its own language.
+"src/finbot/core/categories/catalog.py" = ["RUF001"]
 
 [tool.mypy]
 python_version = "3.12"
