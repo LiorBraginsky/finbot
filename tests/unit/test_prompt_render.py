@@ -13,7 +13,13 @@ from datetime import date
 import pytest
 
 from finbot.core.categories.catalog import CATALOG
-from finbot.prompts import PROMPT_VERSION_TEXT, load, render_text_prompt
+from finbot.prompts import (
+    PROMPT_VERSION_TEXT,
+    PROMPT_VERSION_VOICE,
+    load,
+    render_text_prompt,
+    render_voice_prompt,
+)
 
 
 def test_prompt_version_text_matches_the_shipped_file() -> None:
@@ -46,3 +52,34 @@ def test_render_text_prompt_leaves_no_placeholder_unfilled() -> None:
 def test_load_raises_for_an_unknown_version() -> None:
     with pytest.raises(FileNotFoundError):
         load("extract_text.v999")
+
+
+def test_prompt_version_voice_matches_the_shipped_file() -> None:
+    assert PROMPT_VERSION_VOICE == "extract_voice.v1"
+    assert "Categories" in load(PROMPT_VERSION_VOICE)
+
+
+def test_render_voice_prompt_substitutes_today_and_weekday() -> None:
+    rendered = render_voice_prompt(today=date(2026, 8, 10), catalog=CATALOG)
+    assert "2026-08-10" in rendered
+    assert "Monday" in rendered  # 2026-08-10 is a Monday
+
+
+def test_render_voice_prompt_lists_every_catalog_slug_with_its_emoji() -> None:
+    rendered = render_voice_prompt(today=date(2026, 8, 10), catalog=CATALOG)
+    for category in CATALOG:
+        assert category.slug in rendered
+        assert category.emoji in rendered
+        assert category.description in rendered
+
+
+def test_render_voice_prompt_leaves_no_placeholder_unfilled() -> None:
+    rendered = render_voice_prompt(today=date(2026, 8, 10), catalog=CATALOG)
+    assert "$today" not in rendered
+    assert "$weekday" not in rendered
+    assert "$categories" not in rendered
+
+
+def test_render_voice_prompt_mentions_transcribing_before_extracting() -> None:
+    rendered = render_voice_prompt(today=date(2026, 8, 10), catalog=CATALOG)
+    assert "transcribe" in rendered.lower()
