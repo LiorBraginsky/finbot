@@ -13,15 +13,46 @@ while failing against the real API.
 
 ## Files
 
+### The envelope is what you expect
+
 - `ok_two_items.json` — two expenses, `usage.cost` present, and `model`
   deliberately **different** from the requested primary model, to prove
   `model_id` is read from the response and never from config.
 - `ok_empty.json` — `expenses: []` (spec §7's "message names no amount").
 - `ok_fenced.json` — the assistant content wrapped in a ` ```json ` fence,
   which some providers add even under a strict `response_format`.
-- `invalid_json.json` — the content is prose, not JSON at all.
-- `no_cost.json` — `usage.cost: null`, which the OpenRouter response schema
-  types as nullable; `extractions.cost_usd` must tolerate it.
+- `invalid_json.json` — the content is prose, not JSON at all. The one case
+  the repair loop is for: the envelope is fine, the payload is not.
+- `no_cost.json` — `usage.cost: null`, which the response schema types as
+  nullable; `extractions.cost_usd` must tolerate it.
+
+### HTTP 200 with an envelope that is not what you expect
+
+These six are the third failure class, beside transport failure and schema
+violation (ADR-0014 §6). Every one of them was a live escape at some point in
+Stage 1's review: the exception reached the drain instead of becoming an
+`LlmError`, so a **billed call left no `extractions` row** — breaking
+`CLAUDE.md` rule 6, which exists to make the evaluation dataset complete.
+
+- `error_envelope_200.json` — a provider error object returned under HTTP 200,
+  with no `model` key at all.
+- `no_choices.json` — `choices: []`. Carries a real cost: the call was billed.
+- `null_content.json` — `content: null`, as a refusal or a reasoning-only
+  generation produces. Also billed.
+- `not_json.json` — the body is not JSON. An empty response, a proxy's HTML
+  error page, or a misconfigured `OPENROUTER_BASE_URL`. This is why the parse
+  guard starts at `loads_decimal`, not at the first line that indexes.
+- `null_model.json` — `"model": null`, which would otherwise reach a
+  `String(128) NOT NULL` column and raise at flush, far from the cause.
+- `usage_not_a_mapping.json` — `"usage": "n/a"`. Neither the presence of a key
+  nor its type can be assumed.
+- `cost_not_a_number.json` — `usage.cost` as a string, which would reach a
+  `Numeric(12,8)` bind as text.
+
+When adding a fixture here, derive the case from the **envelope's failure
+space**, not from the shapes already listed. That habit is the difference
+between a suite that pins the parser and one that documents the bugs already
+found.
 
 ## Provenance and refreshing
 
