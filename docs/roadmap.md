@@ -90,13 +90,32 @@ Two deferrals from Stage 1 land here, both recorded in ADR-0013 and the journal:
 
 ---
 
-## ⬜ Stage 2 — Voice
+## 🚧 Stage 2 — Voice
 
 - OGG/Opus from Telegram → multimodal model → `{transcript, expenses[]}`
-- `ffmpeg` conversion as the fallback path
+- `ffmpeg` converts every voice note, unconditionally — see ADR-0015, which
+  supersedes this stage's own original "fallback path" wording
 - Transcript shown in the confirmation and stored as provenance
 
 **Done when:** five expenses dictated in one voice note all land correctly.
+
+*Software complete: the voice extraction path (`core/extraction/voice.py`, a hand-built
+strict schema carrying `transcript` alongside `expenses`, `extract_voice.v1`), the
+download-to-memory-then-`ffmpeg`-to-mp3 module (`adapters/telegram/audio.py`, no temp
+files, a size ceiling), the pipeline routing on `message.kind` with one repair loop
+shared between text and voice, the confirmation's `🎤 «...»` transcript line, and the
+`--modality voice` eval runner with its own `transcript_ok` metric are all built and
+covered by `pytest` (255 → 329). Two guards run before any download or model call —
+`MODEL_VOICE` unset, and a note over `MAX_VOICE_SECONDS` — refusing with an explanation
+and a findable `last_error`, exactly like the text currency guard. The currency guard
+itself runs on voice *after* extraction, on the model's own transcript, since there is no
+text to inspect beforehand; the call is already paid for by then, which ADR-0004's
+original design already accepted. **What remains is not software:** the owner sets
+`MODEL_VOICE` after running `python -m evals.run --modality voice` against the recordings
+`evals/golden/voice/README.md` describes producing, then the stage's actual
+done-criterion — five expenses dictated in one voice note landing correctly, in the real
+household chat — which no gate can prove and has not started yet. Not marked done until
+it has.*
 
 ---
 
