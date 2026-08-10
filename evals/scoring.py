@@ -15,6 +15,7 @@ raise in that situation; checking `count_exact` first avoids ever reaching it.
 
 from __future__ import annotations
 
+import base64
 import json
 import math
 from dataclasses import dataclass
@@ -279,11 +280,20 @@ def render_table(results: list[ModelResult]) -> str:
 class VoiceGoldenCase:
     case_id: str
     audio_filename: str
+    # Read and base64-encoded by `load_voice_golden_cases` itself, not by
+    # `evals.run.run_voice_case` per call: reading every case's audio
+    # upfront, before the first `client.complete`, is what makes a missing
+    # file (the exact state the owner is in while still recording samples —
+    # see evals/golden/voice/README.md) a fast, free failure instead of one
+    # discovered mid-run, after some cases have already been billed.
+    audio_base64: str
     expected: tuple[ExpectedExpense, ...]
     # A cheap deterministic proxy for "did it hear the words", without a
     # judge model (ADR-0014 §7: never call a judge where an exact check
     # exists) — every substring here must appear in the model's own
-    # `transcript`, case-insensitively.
+    # `transcript`, case-insensitively. Never empty: `all(...)` over an
+    # empty sequence is vacuously `True`, which would make transcript_ok
+    # pass without checking anything — load_voice_golden_cases rejects it.
     expected_transcript_contains: tuple[str, ...]
 
 
@@ -328,11 +338,21 @@ class VoiceModelResult:
         return _nearest_rank_percentile(self.latencies_ms, 0.95)
 
 
-def load_voice_golden_cases(path: Path) -> list[VoiceGoldenCase]:
+def load_voice_golden_cases(path: Path, *, audio_dir: Path) -> list[VoiceGoldenCase]:
     """One JSON object per line, `evals/golden/voice_v1.jsonl`'s own shape:
-    `id`, `audio` (a filename under `evals/golden/voice/`, git-ignored —
-    ADR-0009), `expected` (identical shape to the text set), and
-    `expected_transcript_contains` (a list of substrings).
+    `id`, `audio` (a filename read from `audio_dir`, git-ignored — ADR-0009),
+    `expected` (identical shape to the text set), and
+    `expected_transcript_contains` (a list of substrings, never empty).
+
+    Reads and base64-encodes every case's audio file here, eagerly, for the
+    same reason `load_eval_settings` checks `OPENROUTER_API_KEY` before any
+    HTTP call: with a partial recorded set — the state the owner is in for
+    as long as `evals/golden/voice/README.md` describes recording more — a
+    missing file must fail before the first `client.complete`, not after
+    some earlier cases have already been billed. `read_bytes()` is
+    synchronous I/O; keeping it out of `evals.run`'s `async def run_voice_
+    case` is the same discipline `_save_raw`'s own docstring states for
+    writes.
     """
     cases: list[VoiceGoldenCase] = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -340,12 +360,34 @@ def load_voice_golden_cases(path: Path) -> list[VoiceGoldenCase]:
         if not stripped:
             continue
         payload: dict[str, Any] = json.loads(stripped, parse_float=Decimal)
+        case_id = payload["id"]
+        audio_filename = payload["audio"]
+        audio_path = audio_dir / audio_filename
+        try:
+            audio_bytes = audio_path.read_bytes()
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(
+                f"{path}: case {case_id!r} needs {audio_path}, which does not exist — "
+                f"see {audio_dir}/README.md for how to produce it"
+            ) from exc
+
+        transcript_contains = tuple(payload["expected_transcript_contains"])
+        if not transcript_contains:
+            msg = (
+                f"{path}: golden case {case_id!r} has an empty "
+                "expected_transcript_contains — all(...) over an empty sequence is "
+                "vacuously True, so transcript_ok would pass without checking anything; "
+                "name at least one substring the transcript must contain"
+            )
+            raise ValueError(msg)
+
         cases.append(
             VoiceGoldenCase(
-                case_id=payload["id"],
-                audio_filename=payload["audio"],
+                case_id=case_id,
+                audio_filename=audio_filename,
+                audio_base64=base64.b64encode(audio_bytes).decode("ascii"),
                 expected=_parse_expected(payload, path),
-                expected_transcript_contains=tuple(payload["expected_transcript_contains"]),
+                expected_transcript_contains=transcript_contains,
             )
         )
     return cases

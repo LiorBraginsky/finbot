@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import logging
 import sys
 from collections.abc import Sequence
@@ -190,19 +189,18 @@ async def run_voice_case(
     case: VoiceGoldenCase,
     today: date,
     *,
-    audio_dir: Path,
     save_raw: Path | None = None,
     repeat_index: int = 0,
 ) -> VoiceCaseScore:
-    """Mirrors `run_case` — one call, no repair loop, same reasoning — reading
-    `case.audio_filename` off disk and base64-encoding it is voice's only
-    extra step, done here rather than in `core.extraction.voice` because
-    reading a file is I/O this module already owns (`_save_raw` below is the
-    same division of labour).
+    """Mirrors `run_case` — one call, no repair loop, same reasoning.
+
+    `case.audio_base64` is already read and encoded by `load_voice_golden_
+    cases`, eagerly, for every case, before this function or `client.
+    complete` is ever called — so a missing audio file fails fast, before
+    anything is billed, rather than mid-run after some cases already were.
     """
-    audio_base64 = base64.b64encode((audio_dir / case.audio_filename).read_bytes()).decode("ascii")
     request = voice_extraction.build_request(
-        audio_base64=audio_base64, today=today, catalog=CATALOG, models=(model,)
+        audio_base64=case.audio_base64, today=today, catalog=CATALOG, models=(model,)
     )
     try:
         response = await client.complete(request)
@@ -233,19 +231,12 @@ async def run_voice_model(
     cases: Sequence[VoiceGoldenCase],
     today: date,
     *,
-    audio_dir: Path,
     repeats: int = 1,
     save_raw: Path | None = None,
 ) -> VoiceModelResult:
     scores = [
         await run_voice_case(
-            client,
-            model,
-            case,
-            today,
-            audio_dir=audio_dir,
-            save_raw=save_raw,
-            repeat_index=repeat_index,
+            client, model, case, today, save_raw=save_raw, repeat_index=repeat_index
         )
         for case in cases
         for repeat_index in range(repeats)
@@ -329,6 +320,16 @@ async def main(argv: Sequence[str] | None = None) -> None:
         else args.cases
     )
 
+    # Loaded before any socket is opened, same discipline as
+    # load_eval_settings's own API-key check: a missing golden case's audio
+    # file (evals.scoring.load_voice_golden_cases reads and base64-encodes
+    # every one, eagerly) must fail here, for free, rather than mid-run
+    # after some earlier cases were already billed.
+    if args.modality == "voice":
+        voice_cases = load_voice_golden_cases(cases_path, audio_dir=args.audio_dir)
+    else:
+        cases = load_golden_cases(cases_path)
+
     async with aiohttp.ClientSession() as http:
         client = OpenRouterClient(
             session=http,
@@ -337,23 +338,15 @@ async def main(argv: Sequence[str] | None = None) -> None:
             timeout_seconds=settings.llm_timeout_seconds,
         )
         if args.modality == "voice":
-            voice_cases = load_voice_golden_cases(cases_path)
             voice_results = [
                 await run_voice_model(
-                    client,
-                    model,
-                    voice_cases,
-                    today,
-                    audio_dir=args.audio_dir,
-                    repeats=args.repeats,
-                    save_raw=args.save_raw,
+                    client, model, voice_cases, today, repeats=args.repeats, save_raw=args.save_raw
                 )
                 for model in models
             ]
             print(render_voice_table(voice_results))  # noqa: T201 -- the point of this CLI
             return
 
-        cases = load_golden_cases(cases_path)
         results = [
             await run_model(
                 client, model, cases, today, repeats=args.repeats, save_raw=args.save_raw

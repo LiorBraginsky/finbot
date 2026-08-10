@@ -367,14 +367,25 @@ def _voice_response_body(
     )
 
 
-async def test_run_voice_case_scores_a_matching_transcript_and_expense_exact(
-    tmp_path: Path,
-) -> None:
-    audio_path = tmp_path / "case.oga"
-    audio_path.write_bytes(b"not-real-audio-just-test-bytes")
-    case = VoiceGoldenCase(
-        case_id="v1",
-        audio_filename="case.oga",
+def _voice_case(
+    *,
+    case_id: str = "v1",
+    audio_filename: str = "case.oga",
+    audio_base64: str = "aXJyZWxldmFudA==",  # "irrelevant"
+    expected: tuple[ExpectedExpense, ...] = (),
+    expected_transcript_contains: tuple[str, ...] = ("хліб",),
+) -> VoiceGoldenCase:
+    return VoiceGoldenCase(
+        case_id=case_id,
+        audio_filename=audio_filename,
+        audio_base64=audio_base64,
+        expected=expected,
+        expected_transcript_contains=expected_transcript_contains,
+    )
+
+
+async def test_run_voice_case_scores_a_matching_transcript_and_expense_exact() -> None:
+    case = _voice_case(
         expected=(ExpectedExpense("хліб", Decimal("50.00"), "groceries", 0),),
         expected_transcript_contains=("хліб", "50"),
     )
@@ -386,9 +397,7 @@ async def test_run_voice_case_scores_a_matching_transcript_and_expense_exact(
     )
     client = FakeLlmClient(body)
 
-    score = await run_voice_case(
-        client, "google/gemini-2.5-flash", case, _TODAY, audio_dir=tmp_path
-    )
+    score = await run_voice_case(client, "google/gemini-2.5-flash", case, _TODAY)
 
     assert score.schema_ok
     assert score.count_exact
@@ -399,15 +408,11 @@ async def test_run_voice_case_scores_a_matching_transcript_and_expense_exact(
     assert score.cost_usd == Decimal("0.0002")
 
 
-async def test_run_voice_case_sends_the_audio_file_as_base64_input_audio(tmp_path: Path) -> None:
-    audio_path = tmp_path / "case.oga"
-    audio_path.write_bytes(b"raw-audio-bytes")
-    case = VoiceGoldenCase(
-        case_id="v1", audio_filename="case.oga", expected=(), expected_transcript_contains=()
-    )
+async def test_run_voice_case_sends_the_case_audio_as_base64_input_audio() -> None:
+    case = _voice_case(audio_base64=base64.b64encode(b"raw-audio-bytes").decode("ascii"))
     client = FakeLlmClient(_voice_response_body(model="m", transcript="", expenses=[], cost=None))
 
-    await run_voice_case(client, "m", case, _TODAY, audio_dir=tmp_path)
+    await run_voice_case(client, "m", case, _TODAY)
 
     sent_content = client.requests[0].messages[-1]["content"]
     assert sent_content[0]["type"] == "input_audio"
@@ -416,14 +421,11 @@ async def test_run_voice_case_sends_the_audio_file_as_base64_input_audio(tmp_pat
     )
 
 
-async def test_run_voice_case_treats_a_transport_error_as_a_failed_case(tmp_path: Path) -> None:
-    (tmp_path / "whatever.oga").write_bytes(b"irrelevant")
-    case = VoiceGoldenCase(
-        case_id="v1", audio_filename="whatever.oga", expected=(), expected_transcript_contains=()
-    )
+async def test_run_voice_case_treats_a_transport_error_as_a_failed_case() -> None:
+    case = _voice_case()
     client = FakeLlmClient(LlmError("boom", raw={"error": "boom"}))
 
-    score = await run_voice_case(client, "m", case, _TODAY, audio_dir=tmp_path)
+    score = await run_voice_case(client, "m", case, _TODAY)
 
     assert not score.schema_ok
     assert not score.transcript_ok
