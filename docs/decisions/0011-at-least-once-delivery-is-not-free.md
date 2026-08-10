@@ -1,6 +1,8 @@
 # ADR-0011 — At-least-once delivery is not free; the spec's claim is withdrawn
 
-**Date:** 2026-08-09 · **Status:** accepted
+**Date:** 2026-08-09 · **Status:** superseded by
+[ADR-0013](0013-messages-table-is-the-inbox.md), which makes the choice this record
+deferred to Stage 1.
 **Supersedes:** the redelivery claim in `docs/specs/2026-08-09-expense-capture-design.md`
 §4 and §7.
 

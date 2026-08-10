@@ -62,6 +62,19 @@ started either.*
 
 **Done when:** *"100 dollars for hosting"* is stored with a correct `amount_uah`.
 
+Two deferrals from Stage 1 land here, both recorded in ADR-0013 and the journal:
+
+- **`fx_rate_date` is currently set on rows that were never converted** (every UAH row
+  gets `fx_rate_date = occurred_at`, with `fx_rate = 1`). Stage 1.5's inevitable "which
+  rows used a stale or missing rate" query would otherwise find a year of rows claiming a
+  rate date they never had. Decide the honest value — `NULL` for unconverted rows — and
+  backfill.
+- **A lease column (`claimed_until`) instead of the crash-release guard.** One predicate
+  in `claim_next` would then cover a caught exception, a SIGKILL and a stalled worker
+  alike, replacing the startup `reset_processing` and the conditional release. Rejected
+  in Stage 1 as a migration plus a renewal loop for two users; revisit if a second worker
+  ever appears.
+
 ---
 
 ## ⬜ Stage 2 — Voice

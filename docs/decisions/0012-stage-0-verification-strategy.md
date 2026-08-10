@@ -178,3 +178,82 @@ routing order; such a test passes whether or not either exists.
 correct retry has to guard two racy call sites, and has to clear the orphaned Ryuk
 container between attempts through a private API. Disabling Ryuk removes the racing path
 instead of papering over it, and the only thing lost is cleanup after an abnormal death.
+
+---
+
+## Amendment — 2026-08-10, Stage 1
+
+Nothing above is withdrawn. Stage 1 extended the standing pattern in four ways, recorded
+here rather than in a new ADR because they are additions to this decision, not a different
+one. Written alongside [ADR-0013](0013-messages-table-is-the-inbox.md) and
+[ADR-0014](0014-structured-output-and-the-evals-split.md); the plan is
+`docs/plans/stage-1-text-to-expense.md`.
+
+### A fake **LLM** client beside the fake transport session
+
+Choice 3 replaced the Telegram transport. Stage 1 added the second thing the code talks to
+over a socket: `tests/support/fake_llm.py` is `FakeSession`'s counterpart for the model. It
+is scripted with responses in order, records every `LlmRequest` it was given — which is how
+the repair prompt is asserted — and raises `AssertionError` on any call beyond its script,
+because "the code called a model behind my back" must be a loud failure, never a bill.
+
+It parses its scripted bodies through `finbot.llm.openrouter.parse_response_body`, the exact
+function `OpenRouterClient` calls, so a change to cost or model-id extraction cannot pass
+here while failing in production. As a second line, `tests/conftest.py` points
+`OPENROUTER_BASE_URL` at the discard port (`http://127.0.0.1:9`), so a real client
+constructed by accident fails in milliseconds instead of spending money. A blanket socket
+ban is deliberately **not** used: testcontainers talks to the Docker socket over HTTP.
+
+### Fixtures are whole recorded response bodies, never domain objects
+
+`tests/fixtures/openrouter/*.json` hold complete HTTP response bodies, because the failures
+worth catching are *shape* failures nobody invents correctly by hand: `content` arriving as
+a string containing JSON, a provider adding a ```json fence under a strict `response_format`,
+`usage.cost` being `null`, an error object returned inside a 200. The unit under test is the
+parser, so its input has to be what the wire carries.
+
+Their provenance is part of the record: the initial versions are hand-written from the
+documented response schema, because a prerequisite (an API key) must never gate a step, and
+`python -m evals.run --save-raw DIR` refreshes them from **synthetic golden cases only**
+(ADR-0009). The same pattern applies to any later provider surface — Stage 2's audio and
+Stage 4's vision responses get recorded bodies, not hand-built DTOs.
+
+### Two more executable rules
+
+Choice 5 established that a technical rule belongs in the gate, not in prose. Stage 1 added
+two:
+
+- **`tests/unit/test_no_float_money.py`** — `CLAUDE.md` rule 2 at the one place it can be
+  broken silently, the JSON wire. An AST walk over `src/finbot/` and `evals/` resolves calls
+  to json's `loads` by binding rather than by name (module attribute or bare name, aliased
+  either way) and requires `parse_float`; `core/money.py` is the single allow-listed file.
+  Table-driven over the grammar, with control cases that must not be flagged — including the
+  substring trap `loads_decimal`. See ADR-0014 §5.
+- **`tests/unit/test_main.py::test_allowed_updates_matches_registered_handlers`** —
+  `ALLOWED_UPDATES` is what the bot asks Telegram for; `dp.resolve_used_update_types()` is
+  what the router can actually handle, and the test asserts they are equal. Stage 0 shipped
+  `["message"]`, so every ✏️ tap would have been dropped by Telegram before reaching the
+  process: no log, no reply, nothing to debug. This equality makes that class of bug
+  unmergeable. Its sibling, `test_no_global_error_handler_is_registered`, is ADR-0013's.
+
+Both follow choice 5's rule about rules: a check that only ever sees passing input is not
+known to work.
+
+### Two consequences above came due
+
+- **The drift guard's exception list grew from one name to three** — `message_status` and
+  `extraction_status` join `message_kind`. Each is the identical spurious diff for the
+  identical reason (a type-bound CHECK constraint that cannot be excluded symmetrically on
+  the reflected side), and each is excluded by name, never by broadening the guard to "all
+  check constraints". The liability this ADR named is being watched, not forgotten.
+- **`FakeSession` grew branches rather than acquiring a mock beside it**, exactly as the
+  consequence about `callback_query` predicted: `AnswerCallbackQuery`, `EditMessageText`,
+  `EditMessageReplyMarkup`, and a `GetUpdates` branch that records the offset it was called
+  with — which is what lets `tests/unit/test_polling_offset.py` prove ADR-0013's guarantee
+  with no database and no network.
+
+One new harness shape was needed, and it obeys choice 2.
+`tests/integration/test_migration_backfill.py` starts its **own** container rather than
+using the session-scoped `postgres_url`, because that fixture is already at `head` before
+any test could observe the pre-`0002` state the backfill exists to fix. It still fails
+rather than skips when Docker is absent.
