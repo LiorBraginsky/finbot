@@ -45,6 +45,20 @@ from finbot.core.money import loads_decimal
 _CHAT_COMPLETIONS_PATH = "/chat/completions"
 
 
+def _exc_summary(exc: BaseException) -> str:
+    """Name an exception unambiguously for an `LlmError` message.
+
+    `str(exc)` alone is not a safe basis: some exceptions carry no text at
+    all (`str(TimeoutError())` is the empty string), and a message built
+    from nothing but that reads as "something happened" wherever it lands —
+    a WARNING log line, or `messages.last_error` after a message exhausts
+    its retries. Every raise site below names the exception's type and
+    falls back to it alone when `str(exc)` has nothing to add.
+    """
+    detail = str(exc)
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+
+
 def _extract_cost(body: Any) -> Decimal | None:
     """Best-effort `usage.cost`: `None` for anything that isn't cleanly a
     reported number, never a raise. Called *before* the shape checks in
@@ -100,7 +114,7 @@ def parse_response_body(text: str, *, latency_ms: int) -> LlmResponse:
         body = loads_decimal(text)
     except ValueError as exc:  # json.JSONDecodeError is a ValueError subclass
         raise LlmError(
-            f"response body was not JSON: {exc}",
+            f"response body was not JSON ({_exc_summary(exc)})",
             raw={"error": text[:2000], "type": "not_json", "status": None},
         ) from exc
 
@@ -116,7 +130,9 @@ def parse_response_body(text: str, *, latency_ms: int) -> LlmResponse:
         raw_cost = usage.get("cost")
     except (KeyError, IndexError, TypeError, AttributeError) as exc:
         raise LlmError(
-            f"malformed OpenRouter response body: {exc}", raw=body, cost_usd=known_cost
+            f"malformed OpenRouter response body ({_exc_summary(exc)})",
+            raw=body,
+            cost_usd=known_cost,
         ) from exc
 
     if not isinstance(model_id, str) or not isinstance(content, str):
@@ -196,8 +212,19 @@ class OpenRouterClient:
                 text = await response.text()
                 status = response.status
         except (TimeoutError, aiohttp.ClientError) as exc:
+            # TimeoutError in particular is silent (`str(TimeoutError())` is
+            # ""), and the configured timeout is the one actionable number
+            # for it — the request took at least that long, whatever else
+            # is wrong upstream.
+            if isinstance(exc, TimeoutError):
+                message = (
+                    f"OpenRouter request timed out after {self._timeout_seconds}s "
+                    f"({_exc_summary(exc)})"
+                )
+            else:
+                message = f"OpenRouter request failed ({_exc_summary(exc)})"
             raise LlmError(
-                str(exc),
+                message,
                 raw={"error": str(exc), "type": type(exc).__name__, "status": None},
             ) from exc
         latency_ms = int((time.perf_counter() - started) * 1000)
