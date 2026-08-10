@@ -1,0 +1,23 @@
+{
+  "id": "gen-fixture-ok-voice-two-items",
+  "provider": "Google",
+  "model": "google/gemini-3.5-flash-lite",
+  "object": "chat.completion",
+  "created": 1754800100,
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"transcript\": \"хліб пʼятдесят і таксі двісті\", \"expenses\": [{\"item\": \"хліб\", \"amount\": 50, \"category\": \"groceries\", \"occurred_at\": null}, {\"item\": \"таксі\", \"amount\": 200, \"category\": \"transport\", \"occurred_at\": null}]}"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 900,
+    "completion_tokens": 70,
+    "total_tokens": 970,
+    "cost": 0.000456
+  }
+}

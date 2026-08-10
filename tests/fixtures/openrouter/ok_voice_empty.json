@@ -1,0 +1,23 @@
+{
+  "id": "gen-fixture-ok-voice-empty",
+  "provider": "Google",
+  "model": "google/gemini-3.5-flash-lite",
+  "object": "chat.completion",
+  "created": 1754800101,
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"transcript\": \"та я просто наговорюю нотатку\", \"expenses\": []}"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 850,
+    "completion_tokens": 20,
+    "total_tokens": 870,
+    "cost": 0.0000502
+  }
+}

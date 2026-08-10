@@ -54,6 +54,23 @@ space**, not from the shapes already listed. That habit is the difference
 between a suite that pins the parser and one that documents the bugs already
 found.
 
+### Voice (docs/roadmap.md Stage 2)
+
+Same envelope shape as the text fixtures above; only `content` differs, since
+`core.extraction.voice.parse_content` validates against
+`VoiceExtractionResult` (`transcript` plus `expenses`) instead of
+`ExtractionResult`. `invalid_json.json` above is reused as-is for voice too —
+prose fails to parse as JSON regardless of which schema it would have been
+validated against.
+
+- `ok_voice_two_items.json` — a transcript plus two expenses, the voice
+  analogue of `ok_two_items.json`.
+- `ok_voice_empty.json` — a transcript but `expenses: []` — the model heard
+  something, but nothing that named an amount.
+- `ok_voice_foreign_currency.json` — a transcript naming a foreign currency
+  ("доларів"), for the guard that runs on the transcript *after* extraction
+  (docs/roadmap.md Stage 2's decision 4), unlike text's, which runs first.
+
 ## Provenance and refreshing
 
 These initial versions are **hand-written from the documented response
