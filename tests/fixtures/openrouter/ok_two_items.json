@@ -1,0 +1,23 @@
+{
+  "id": "gen-fixture-ok-two-items",
+  "provider": "Google",
+  "model": "google/gemini-3.5-flash-lite",
+  "object": "chat.completion",
+  "created": 1754800000,
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"expenses\": [{\"item\": \"хліб\", \"amount\": 50, \"category\": \"groceries\", \"occurred_at\": null}, {\"item\": \"таксі\", \"amount\": 200, \"category\": \"transport\", \"occurred_at\": null}]}"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 412,
+    "completion_tokens": 61,
+    "total_tokens": 473,
+    "cost": 0.000123
+  }
+}
