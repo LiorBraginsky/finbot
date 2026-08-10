@@ -6,7 +6,8 @@ forever. Real Postgres, a fake LLM client, no Telegram socket (mirrors
 
 import asyncio
 import contextlib
-from datetime import UTC, datetime
+from collections.abc import Sequence
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import cast
 
@@ -16,6 +17,8 @@ from aiogram.methods import SendMessage
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+import finbot.adapters.telegram.runner as runner_module
+from finbot.adapters.telegram.render import ConfirmationLine
 from finbot.adapters.telegram.runner import drain_loop
 from finbot.config import Settings
 from finbot.core.extraction.ports import LlmClient
@@ -154,3 +157,59 @@ async def test_a_bug_in_process_claimed_releases_the_row_and_a_later_tick_recove
 
     sent = [r for r in cast(FakeSession, bot.session).requests if isinstance(r, SendMessage)]
     assert len(sent) == 1
+
+
+async def test_a_late_crash_after_done_does_not_resurrect_the_message(
+    bot: Bot, db_session: AsyncSession, postgres_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pins the guard `_release_crashed_claim` needed that the original
+    Critical 3 finding did not name: `extract_and_store` commits
+    `messages.status = 'done'` (and the `expenses` rows) *before*
+    `_process_claimed` ever renders the reply, so a crash in rendering —
+    after the write, only the reply lost, per the module docstring — must
+    leave the row alone. Without the `current.status != PROCESSING` guard,
+    the crash handler would call `schedule_retry` unconditionally, flip this
+    already-`done` row back to `pending`, and a later tick would re-claim
+    it: a second billed model call and a second, duplicate set of
+    `expenses`.
+    """
+    message_id = await _seed_pending_message(db_session, "хліб 50, таксі 200")
+    settings = _settings(postgres_url)
+    sessionmaker = create_sessionmaker(postgres_url)
+    llm = FakeLlmClient(_load_fixture("ok_two_items"))
+
+    def boom_render_confirmation(lines: Sequence[ConfirmationLine], *, today: date) -> str:
+        raise RuntimeError("boom: rendering exploded after the write")
+
+    # runner.py binds render_confirmation into its own module namespace via
+    # `from ... import render_confirmation`, so the module-under-test is
+    # what must be patched — patching `finbot.adapters.telegram.render`
+    # itself would leave runner's already-bound name untouched.
+    monkeypatch.setattr(runner_module, "render_confirmation", boom_render_confirmation)
+
+    await _run_one_drain_tick(bot=bot, sessionmaker=sessionmaker, llm=llm, settings=settings)
+
+    db_session.expire_all()
+    message = await db_session.get(Message, message_id)
+    assert message is not None
+    assert message.status == MessageStatus.DONE
+    assert message.attempts == 1
+
+    expense_rows = (await db_session.execute(select(Expense))).scalars().all()
+    assert len(expense_rows) == 2
+    assert len(llm.requests) == 1
+
+    # A second tick must not reclaim this message: claim_next only claims
+    # 'pending' rows, and this one must still be 'done'. Reprocessing it now
+    # would double-bill the model and duplicate every expense row.
+    await _run_one_drain_tick(bot=bot, sessionmaker=sessionmaker, llm=llm, settings=settings)
+
+    db_session.expire_all()
+    message_after_second_tick = await db_session.get(Message, message_id)
+    assert message_after_second_tick is not None
+    assert message_after_second_tick.status == MessageStatus.DONE
+    assert message_after_second_tick.attempts == 1  # not reclaimed
+    assert len(llm.requests) == 1  # no second LlmRequest issued
+
+    expense_rows_after_second_tick = (await db_session.execute(select(Expense))).scalars().all()
+    assert len(expense_rows_after_second_tick) == 2  # not duplicated

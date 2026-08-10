@@ -57,7 +57,10 @@ _RETRY_CAP_SECONDS = 30 * 60
 # requested model, never the served one) would read as a real value in
 # exactly the place a "which model errors on us" query would look. A
 # sentinel says plainly that no model ever responded, rather than lying
-# with a plausible-looking model id.
+# with a plausible-looking model id. Contains no "/": every real OpenRouter
+# model id is "vendor/model", so this can never collide with one — a future
+# "improvement" to a friendlier-looking value like "unknown" would lose that
+# guarantee, which is the whole reason to keep this one deliberately ugly.
 NO_RESPONSE_MODEL_ID = "no-response"
 
 
@@ -126,7 +129,13 @@ async def extract_and_store(
                 attempt=attempt,
                 status=ExtractionStatus.FAILED,
                 raw_response=exc.raw,
-                cost_usd=None,
+                # Not always None: a malformed 200 (a null model, an empty
+                # choices) can still carry a legible usage.cost next to
+                # whatever else is wrong with the body — parse_response_body
+                # fills LlmError.cost_usd in exactly then, so the call the
+                # household was actually billed for is the row rule 6 keeps,
+                # not a blanket NULL that reads as "this was free".
+                cost_usd=exc.cost_usd,
                 latency_ms=_elapsed_ms(started),
             )
             await messages_repo.schedule_retry(

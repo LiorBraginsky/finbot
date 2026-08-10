@@ -153,6 +153,12 @@ async def _release_crashed_claim(
     and a second, duplicate set of `expenses`. The loss in that case is only
     the reply — the module docstring's own trade-off — not a crash this
     function can or should fix.
+
+    Like `reset_processing`, correct only under this project's single-node,
+    single-replica deployment (ADR-0002): nothing here stamps a claim owner
+    on `message_id`, so a multi-replica deployment would need one before
+    this function could tell "this process's own crashed claim" apart from
+    a row a different replica is still legitimately working.
     """
     async with sessionmaker() as retry_session:
         current = await retry_session.get(Message, message_id)
@@ -171,8 +177,17 @@ async def _release_crashed_claim(
         retry_session.expire(current)
         refreshed = await retry_session.get(Message, message_id)
 
+    # The release above already committed by this point — a failure here is
+    # only a failure to *notify*, and must not read, to whoever catches it,
+    # as a failure to release. Caught here, not left to propagate, exactly
+    # so drain_loop's own except clause never has to guess which one it was.
     if refreshed is not None and refreshed.status == MessageStatus.FAILED:
-        await bot.send_message(chat_id=chat_id, text=PROCESSING_FAILED_REPLY)
+        try:
+            await bot.send_message(chat_id=chat_id, text=PROCESSING_FAILED_REPLY)
+        except Exception:
+            logger.exception(
+                "message_id=%s released to 'failed', but sending the reply failed", message_id
+            )
 
 
 async def drain_loop(

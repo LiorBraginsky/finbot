@@ -12,11 +12,11 @@ import pytest
 from aiogram import Bot
 from aiogram.methods import GetUpdates
 from aiogram.types import Update
-from aiogram.utils import backoff as backoff_module
 from aiogram.utils.backoff import BackoffConfig
 
+import finbot.adapters.telegram.polling as polling_module
 from finbot.adapters.telegram.errors import PersistenceError
-from finbot.adapters.telegram.polling import run_polling
+from finbot.adapters.telegram.polling import _sleep_or_stop, run_polling
 
 # Real seconds would make this suite slow for no reason: the loop's own
 # behaviour is under test, not the pacing of aiogram's Backoff.
@@ -117,16 +117,16 @@ async def test_repeated_persistence_errors_ramp_up_the_backoff_not_pinned_at_min
     `getUpdates`, before the batch was ever acknowledged — so a
     `PersistenceError`, however many times in a row, always slept ~1s
     (`min_delay`) instead of ramping up like any other repeated failure.
-    Patches `aiogram.utils.backoff`'s own `asyncio.sleep` (not this module's)
-    to record the delays `Backoff.asleep()` actually requests, without
-    spending real seconds on them.
+    Patches this module's own `_sleep_or_stop` (the stop-aware wait that
+    replaced a bare `backoff.asleep()`) to record the delay it is asked to
+    wait for, without spending real seconds on it.
     """
     delays: list[float] = []
 
-    async def fake_sleep(delay: float) -> None:
+    async def fake_sleep_or_stop(delay: float, stop: asyncio.Event) -> None:
         delays.append(delay)
 
-    monkeypatch.setattr(backoff_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(polling_module, "_sleep_or_stop", fake_sleep_or_stop)
 
     stop = asyncio.Event()
     updates = [_update(1)]
@@ -189,6 +189,21 @@ async def test_stop_mid_poll_returns_promptly_without_waiting_for_getupdates() -
     stop.set()
 
     # If `stop` did not race the poll, this would hang for 3600s instead.
+    await asyncio.wait_for(task, timeout=1.0)
+
+
+async def test_sleep_or_stop_returns_as_soon_as_stop_fires() -> None:
+    """`_sleep_or_stop` in isolation: `Backoff.asleep()` has no way to be
+    interrupted, and `max_delay` (60s) exceeds `stop_grace_period` (45s,
+    infra/docker-compose.yml) — a SIGTERM landing during a maxed-out backoff
+    must not wait the delay out.
+    """
+    stop = asyncio.Event()
+    task = asyncio.create_task(_sleep_or_stop(3600.0, stop))
+    await asyncio.sleep(0)  # let the task start waiting on stop.wait()
+    stop.set()
+
+    # If this waited the delay out instead, wait_for itself would time out.
     await asyncio.wait_for(task, timeout=1.0)
 
 

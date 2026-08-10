@@ -46,6 +46,20 @@ DEFAULT_BACKOFF_CONFIG: Final[BackoffConfig] = BackoffConfig(
 Feed = Callable[[Update], Awaitable[None]]
 
 
+async def _sleep_or_stop(delay: float, stop: asyncio.Event) -> None:
+    """`asyncio.sleep(delay)`, but returns as soon as `stop` fires instead of
+    waiting the delay out — `drain_loop`'s idle wait already uses exactly
+    this idiom. `Backoff.asleep()` has no such option, and `max_delay`
+    (60s, `DEFAULT_BACKOFF_CONFIG`) exceeds `stop_grace_period` (45s,
+    infra/docker-compose.yml): without this, a SIGTERM landing during a
+    maxed-out backoff — precisely the kind of outage where the drain may be
+    mid-`llm.complete()` — would still end in SIGKILL rather than a clean
+    shutdown.
+    """
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(stop.wait(), timeout=delay)
+
+
 async def run_polling(
     *,
     bot: Bot,
@@ -92,7 +106,11 @@ async def run_polling(
                 updates = get_updates_task.result()
             except Exception:
                 logger.exception("getUpdates failed")
-                await backoff.asleep()
+                # next(backoff), not backoff.asleep(): the delay still has
+                # to be computed (and the backoff's state still advanced)
+                # the same way, but the actual wait must be interruptible —
+                # see _sleep_or_stop.
+                await _sleep_or_stop(next(backoff), stop)
                 continue
         finally:
             if not stop_wait_task.done():
@@ -113,7 +131,7 @@ async def run_polling(
             # backoff.reset() is deliberately *not* called on this path (see
             # below): a repeated withhold must ramp up like any other
             # failure, not stay pinned at min_delay.
-            await backoff.asleep()
+            await _sleep_or_stop(next(backoff), stop)
             continue  # offset NOT advanced
 
         if updates:

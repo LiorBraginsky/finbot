@@ -264,18 +264,35 @@ async def test_llm_error_records_a_failed_row_with_no_cost(db_session: AsyncSess
 
 
 @pytest.mark.parametrize(
-    "fixture_name",
-    ["error_envelope_200", "no_choices", "null_content"],
+    ("fixture_name", "expected_cost"),
+    [
+        # No usage at all in the body, or no body at all: nothing to carry.
+        ("error_envelope_200", None),
+        ("not_json", None),
+        # usage.cost is cleanly reported even though something *else* in
+        # the body is what's actually malformed — the call was billed, and
+        # the row must say so, not read NULL as if it were free.
+        ("no_choices", Decimal("0.00003")),
+        ("null_content", Decimal("0.00002")),
+        ("null_model", Decimal("0.00003")),
+        # usage itself, or usage.cost itself, is the broken part: there is
+        # nothing trustworthy to carry.
+        ("usage_not_a_mapping", None),
+        ("cost_not_a_number", None),
+    ],
 )
-async def test_a_malformed_200_records_a_failed_row_with_no_cost(
-    db_session: AsyncSession, fixture_name: str
+async def test_a_malformed_200_records_a_failed_row_with_the_cost_it_can_prove(
+    db_session: AsyncSession, fixture_name: str, expected_cost: Decimal | None
 ) -> None:
-    """Three realistic 200 responses `parse_response_body` used to let raise
-    `KeyError`/`IndexError`/`AttributeError` straight past `extract_and_store`
-    — neither `LlmError` nor `ExtractionInvalidError` — so a billed (or at
-    least attempted) call left no `extractions` row at all, breaking
-    CLAUDE.md rule 6. All three now surface as `LlmError`, so they take
-    exactly the same path as any other transport failure.
+    """Seven realistic 200 responses `parse_response_body` used to let raise
+    `json.JSONDecodeError`/`KeyError`/`IndexError`/`TypeError`/`AttributeError`
+    straight past `extract_and_store` — neither `LlmError` nor
+    `ExtractionInvalidError` — so a billed (or at least attempted) call left
+    no `extractions` row at all, breaking CLAUDE.md rule 6. All seven now
+    surface as `LlmError`, so they take exactly the same path as any other
+    transport failure — and three of them (a null model or empty choices
+    next to an otherwise legible `usage.cost`) prove the call's real cost
+    survives onto that row rather than reading as free.
     """
     message = await _claimed_message(db_session, "хліб 50")
     message_id = message.id
@@ -300,7 +317,7 @@ async def test_a_malformed_200_records_a_failed_row_with_no_cost(
     assert len(extraction_rows) == 1
     row = extraction_rows[0]
     assert row.status == ExtractionStatus.FAILED
-    assert row.cost_usd is None
+    assert row.cost_usd == expected_cost
     assert row.model_id == NO_RESPONSE_MODEL_ID
 
     db_session.expire_all()

@@ -1,0 +1,23 @@
+{
+  "id": "gen-fixture-null-model",
+  "provider": "OpenAI",
+  "model": null,
+  "object": "chat.completion",
+  "created": 1754800007,
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"expenses\": []}"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 400,
+    "completion_tokens": 6,
+    "total_tokens": 406,
+    "cost": 0.00003
+  }
+}

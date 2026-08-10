@@ -137,7 +137,10 @@ async def run_case(
         response = await client.complete(request)
     except LlmError as exc:
         logger.warning("model %s errored on case %s: %s", model, case.case_id, exc)
-        return failed_case_score(case.case_id, cost_usd=None, latency_ms=None)
+        # Not always None: a malformed 200 can still carry a legible
+        # usage.cost next to whatever else is wrong with the body — see
+        # llm/openrouter.py's parse_response_body.
+        return failed_case_score(case.case_id, cost_usd=exc.cost_usd, latency_ms=None)
 
     if save_raw is not None:
         _save_raw(save_raw, model, case.case_id, repeat_index, response.raw_text)

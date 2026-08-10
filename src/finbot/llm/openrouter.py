@@ -33,6 +33,7 @@ check):
 """
 
 import time
+from decimal import Decimal
 from typing import Any
 
 import aiohttp
@@ -44,36 +45,100 @@ from finbot.core.money import loads_decimal
 _CHAT_COMPLETIONS_PATH = "/chat/completions"
 
 
+def _extract_cost(body: Any) -> Decimal | None:
+    """Best-effort `usage.cost`: `None` for anything that isn't cleanly a
+    reported number, never a raise. Called *before* the shape checks in
+    `parse_response_body` that can themselves raise, so a `LlmError` about
+    something else being wrong with the body (a null model, an empty
+    `choices`) can still carry the cost that really was billed for the
+    call — CLAUDE.md rule 6 names `cost_usd` explicitly, and `NULL` there is
+    indistinguishable from "nothing was charged". This function only ever
+    answers "is there a clean value to carry along"; `parse_response_body`
+    is what turns "reported, but not a number" into a `LlmError` of its own.
+    """
+    if not isinstance(body, dict):
+        return None
+    usage = body.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    cost = usage.get("cost")
+    if cost is None or isinstance(cost, bool):
+        return None
+    if isinstance(cost, int):
+        return Decimal(cost)
+    return cost if isinstance(cost, Decimal) else None
+
+
 def parse_response_body(text: str, *, latency_ms: int) -> LlmResponse:
     """Parse a raw OpenRouter chat-completions HTTP response body into an
     `LlmResponse`. Shared verbatim between `OpenRouterClient.complete()` and
     `tests/support/fake_llm.py`'s `FakeLlmClient`, so a change to cost or
     model-id extraction cannot pass in tests while failing in production.
 
-    A 200 response is not a guarantee of this shape: a provider error can
-    come back wrapped in a 200 (`{"error": {...}}`, no `choices` at all), a
-    route can return `{"choices": []}`, and a refusal or a reasoning-only
-    generation can leave `message.content` `null`. Each of those used to
-    raise `KeyError`/`IndexError`/`AttributeError` straight out of this
-    function — none of which `core.extraction.pipeline.extract_and_store`
-    catches as `LlmError` or `ExtractionInvalidError` — so the call was
-    billed (or at least attempted) with no `extractions` row ever written,
-    breaking CLAUDE.md rule 6. Raising `LlmError` here instead, with the
-    body itself as `raw`, makes "the response made no sense" the record.
+    A 200 response is not a guarantee of any particular shape, starting
+    before the first index: the body itself may not even be JSON (an empty
+    body, a proxy's HTML error page, a misconfigured `OPENROUTER_BASE_URL`
+    pointed at something that isn't OpenRouter at all). Past that, a
+    provider error can come back wrapped in a 200 (`{"error": {...}}`, no
+    `choices` at all), a route can return `{"choices": []}`, `"model"` or
+    `message.content` can be `null`, and `usage` can be present but not a
+    mapping (`"usage": "n/a"`) or `usage.cost` can be present but not a
+    number (`"usage": {"cost": "0.1"}`, a string). Every one of these used to
+    raise straight out of this function — `json.JSONDecodeError`, `KeyError`,
+    `IndexError`, `TypeError`, `AttributeError` — none of which
+    `core.extraction.pipeline.extract_and_store` catches as `LlmError` or
+    `ExtractionInvalidError`, so the call was billed (or at least attempted)
+    with no `extractions` row ever written, breaking CLAUDE.md rule 6; a
+    `null` model_id or a non-`Decimal` cost went further still, reaching a
+    `NOT NULL` column or a `Numeric` bind and raising *there* instead.
+    Raising `LlmError` here — as early as the first line that touches
+    untrusted input, not the first line that indexes it — with the body (or
+    the raw text, if it was never JSON) as `raw`, makes "the response made
+    no sense" the record.
     """
-    body = loads_decimal(text)
+    try:
+        body = loads_decimal(text)
+    except ValueError as exc:  # json.JSONDecodeError is a ValueError subclass
+        raise LlmError(
+            f"response body was not JSON: {exc}",
+            raw={"error": text[:2000], "type": "not_json", "status": None},
+        ) from exc
+
+    # Read before any of the shape checks below can raise: a LlmError about
+    # something *else* being wrong with the body (a null model, an empty
+    # choices) still carries the cost that was really billed for the call.
+    known_cost = _extract_cost(body)
+
     try:
         model_id = body["model"]
         content = body["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise LlmError(f"malformed OpenRouter response body: {exc}", raw=body) from exc
-    if not isinstance(content, str):
-        raise LlmError(f"OpenRouter response content was not a string (got {content!r})", raw=body)
-    usage = body.get("usage") or {}
+        usage = body.get("usage") or {}
+        raw_cost = usage.get("cost")
+    except (KeyError, IndexError, TypeError, AttributeError) as exc:
+        raise LlmError(
+            f"malformed OpenRouter response body: {exc}", raw=body, cost_usd=known_cost
+        ) from exc
+
+    if not isinstance(model_id, str) or not isinstance(content, str):
+        raise LlmError(
+            f"OpenRouter response model/content had the wrong type "
+            f"(model={model_id!r}, content={content!r})",
+            raw=body,
+            cost_usd=known_cost,
+        )
+    # bool first: bool is a subclass of int, and a boolean cost is exactly
+    # as nonsensical as a string one, never a legitimate zero/one. No
+    # cost_usd on this one: raw_cost *is* the broken value, so there is
+    # nothing trustworthy to carry.
+    if raw_cost is not None and (
+        isinstance(raw_cost, bool) or not isinstance(raw_cost, Decimal | int)
+    ):
+        raise LlmError(f"usage.cost was not a number (got {raw_cost!r})", raw=body)
+
     return LlmResponse(
         model_id=model_id,
         content=content,
-        cost_usd=usage.get("cost"),
+        cost_usd=known_cost,
         latency_ms=latency_ms,
         raw=body,
         raw_text=text,

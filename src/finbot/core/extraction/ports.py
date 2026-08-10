@@ -46,11 +46,22 @@ class LlmError(Exception):
     Carries `raw` — the error object recorded verbatim into
     `extractions.raw_response`, because CLAUDE.md rule 6 records every call,
     including failed ones, and "we had no response" is itself the record.
+
+    `cost_usd` defaults to `None` (no response ever arrived, or the response
+    reported nothing usable) but is not always `None`: a malformed 200 can
+    still carry a legible `usage.cost` next to whatever *else* is wrong with
+    the body (a null model, an empty `choices`) — `llm/openrouter.py`'s
+    `parse_response_body` fills it in exactly then, because rule 6 names
+    `cost_usd` explicitly and a `NULL` there is indistinguishable from "this
+    call was free".
     """
 
-    def __init__(self, message: str, *, raw: Mapping[str, Any]) -> None:
+    def __init__(
+        self, message: str, *, raw: Mapping[str, Any], cost_usd: Decimal | None = None
+    ) -> None:
         super().__init__(message)
         self.raw = raw
+        self.cost_usd = cost_usd
 
 
 class LlmClient(Protocol):
