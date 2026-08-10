@@ -20,6 +20,7 @@ from aiogram.methods import (
     GetMe,
     GetUpdates,
     SendMessage,
+    SetMyCommands,
     TelegramMethod,
 )
 from aiogram.methods.base import TelegramType
@@ -90,6 +91,8 @@ class FakeSession(BaseSession):
         if isinstance(method, SendMessage):
             return cast(TelegramType, self._next_canned_message())
         if isinstance(method, AnswerCallbackQuery):
+            return cast(TelegramType, True)
+        if isinstance(method, SetMyCommands):
             return cast(TelegramType, True)
         if isinstance(method, EditMessageText):
             message_id = method.message_id

@@ -20,6 +20,10 @@ Two attempt budgets are distinct and must not be confused:
 The plan's Step 2.8 sketch lists only `max_attempts` in this function's
 signature; `max_message_attempts` is required too; there is no
 `schedule_retry` without it and no way to fill it from an existing parameter.
+
+Before any of that: `core.extraction.currency.detect_foreign_currency` runs
+first and, on a hit, returns without ever calling the model — see that
+module's docstring for why.
 """
 
 import logging
@@ -31,6 +35,7 @@ from datetime import date
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from finbot.core.categories.catalog import CategorySpec
+from finbot.core.extraction.currency import FOREIGN_CURRENCY_ERROR, detect_foreign_currency
 from finbot.core.extraction.ports import LlmClient, LlmError
 from finbot.core.extraction.schema import ExpenseDraft
 from finbot.core.extraction.text import (
@@ -70,6 +75,12 @@ class ExtractionOutcome:
     expense_ids: tuple[int, ...] = field(default_factory=tuple)
     drafts: tuple[ExpenseDraft, ...] = field(default_factory=tuple)
     asked_for_clarification: bool = False
+    # True only for the foreign-currency guard below: `status` is set to
+    # something in ExtractionStatus regardless (the type requires it), but
+    # it means nothing in that case — no extraction was attempted, so no
+    # `extractions` row exists for it to describe. Callers (runner.py) must
+    # check this flag before ever looking at `status`.
+    foreign_currency: bool = False
 
 
 def _elapsed_ms(started: float) -> int:
@@ -109,6 +120,16 @@ async def extract_and_store(
 ) -> ExtractionOutcome:
     if message.raw_text is None:
         raise ValueError(f"message {message.id} has no raw_text; extraction requires plain text")
+
+    if detect_foreign_currency(message.raw_text):
+        # Before anything else, and before building a request: currencies
+        # are Stage 1.5 (docs/roadmap.md), so refusing here is not only
+        # correct but free — no request is ever built, let alone sent. No
+        # `extractions` row either: there was no attempt to record, only a
+        # decision not to make one.
+        await messages_repo.mark_skipped(session, message.id, error=FOREIGN_CURRENCY_ERROR)
+        await session.commit()
+        return ExtractionOutcome(status=ExtractionStatus.FAILED, foreign_currency=True)
 
     request = build_request(raw_text=message.raw_text, today=today, catalog=catalog, models=models)
     last_error = ""

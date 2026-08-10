@@ -64,6 +64,25 @@ ignore = ["S104"]
 "src/finbot/adapters/telegram/render.py" = ["RUF001"]
 # Asserts the exact Ukrainian/Cyrillic text render.py produces.
 "tests/unit/test_render.py" = ["RUF001"]
+# The currency guard's marker table is Cyrillic words by definition (дол,
+# долар, бакс, євро...), and its comments/docstrings quote them and their
+# Ukrainian near-homographs (долина, європа) to explain what must NOT match
+# — same justification as the catalog above, extended to RUF002/RUF003
+# because the quoting happens in docstrings and comments here, not only in
+# string literals.
+"src/finbot/core/extraction/currency.py" = ["RUF001", "RUF002", "RUF003"]
+# Asserts the exact Cyrillic marker table finbot.core.extraction.currency
+# matches and rejects.
+"tests/unit/test_currency.py" = ["RUF001"]
+# BOT_COMMANDS' descriptions are the exact Ukrainian text Telegram shows in
+# the command menu, same justification as the catalog above.
+"src/finbot/adapters/telegram/main.py" = ["RUF001"]
+# Asserts the exact Ukrainian text of BOT_COMMANDS.
+"tests/unit/test_main.py" = ["RUF001"]
+# Foreign-currency-marker raw_text fixtures ("10доларів"), same
+# justification as the catalog above.
+"tests/integration/test_currency_guard.py" = ["RUF001"]
+"tests/integration/test_extraction_pipeline.py" = ["RUF001"]
 
 [tool.mypy]
 python_version = "3.12"

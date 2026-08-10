@@ -10,10 +10,12 @@ import contextlib
 import logging
 import signal
 from functools import partial
+from typing import Final
 from zoneinfo import ZoneInfo
 
 import aiohttp
 from aiogram import Bot, Dispatcher
+from aiogram.types import BotCommand, BotCommandScopeAllGroupChats
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from finbot.adapters.telegram.handlers import build_router
@@ -36,6 +38,24 @@ logger = logging.getLogger(__name__)
 # positional arguments Stage 0 already used, with no Settings object in
 # sight.
 _DEFAULT_TZ = ZoneInfo("Europe/Kyiv")
+
+# /ping is deliberately absent: it is a debugging aid, not something either
+# household member needs in the menu. `/help` documents itself, so its own
+# description is short — the full text lives in `render.HELP_TEXT`.
+BOT_COMMANDS: Final[list[BotCommand]] = [
+    BotCommand(command="day", description="витрати за сьогодні"),
+    BotCommand(command="week", description="за тиждень"),
+    BotCommand(command="month", description="за місяць"),
+    BotCommand(command="help", description="що я вмію"),
+]
+
+
+async def register_commands(bot: Bot) -> None:
+    """Scoped to `AllGroupChats`, not the default scope: this bot only ever
+    runs in the household's group (docs/vision.md), and the default scope
+    also covers private chats the bot is never added to.
+    """
+    await bot.set_my_commands(commands=BOT_COMMANDS, scope=BotCommandScopeAllGroupChats())
 
 
 def build_dispatcher(
@@ -86,6 +106,7 @@ async def main() -> None:
             timeout_seconds=settings.llm_timeout_seconds,
         )
         bot = Bot(token=settings.telegram_bot_token.get_secret_value())
+        await register_commands(bot)
         dp = build_dispatcher(sessionmaker, settings.allowed_user_ids, settings.tz)
         stop = asyncio.Event()
 

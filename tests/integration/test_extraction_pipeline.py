@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from finbot.core.categories.catalog import CATALOG
+from finbot.core.extraction.currency import FOREIGN_CURRENCY_ERROR
 from finbot.core.extraction.pipeline import NO_RESPONSE_MODEL_ID, extract_and_store
 from finbot.core.extraction.ports import LlmError, LlmRequest, LlmResponse
 from finbot.core.models import ExtractionStatus, IncomingMessage, MessageKind, MessageStatus
@@ -475,3 +476,41 @@ async def test_llm_call_does_not_run_inside_an_open_transaction(db_session: Asyn
     )
 
     assert llm.was_in_transaction is False
+
+
+async def test_foreign_currency_message_skips_before_any_model_call(
+    db_session: AsyncSession,
+) -> None:
+    """`FakeLlmClient()`, given no scripted responses at all, raises
+    `AssertionError` the instant `complete()` is ever called (see
+    `tests/support/fake_llm.py`) — the mechanical proof that this message
+    costs zero model calls, not merely an assertion about a call count.
+    """
+    message = await _claimed_message(db_session, "icloud - 10дол")
+    message_id = message.id
+    category_ids = await _category_ids(db_session)
+    llm = FakeLlmClient()
+
+    outcome = await extract_and_store(
+        session=db_session,
+        message=message,
+        llm=llm,
+        catalog=CATALOG,
+        category_ids=category_ids,
+        today=_TODAY,
+        models=_MODELS,
+        max_attempts=2,
+        max_message_attempts=5,
+    )
+
+    assert outcome.foreign_currency is True
+    assert outcome.expense_ids == ()
+
+    assert (await db_session.execute(select(Extraction))).scalars().all() == []
+    assert (await db_session.execute(select(Expense))).scalars().all() == []
+
+    db_session.expire_all()
+    refreshed = await db_session.get(Message, message_id)
+    assert refreshed is not None
+    assert refreshed.status == MessageStatus.SKIPPED
+    assert refreshed.last_error == FOREIGN_CURRENCY_ERROR

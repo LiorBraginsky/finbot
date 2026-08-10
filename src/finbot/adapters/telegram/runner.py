@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from finbot.adapters.telegram.keyboards import confirmation_keyboard
 from finbot.adapters.telegram.render import (
+    FOREIGN_CURRENCY_REPLY,
     NO_EXPENSE_REPLY,
     PROCESSING_FAILED_REPLY,
     ConfirmationLine,
@@ -97,6 +98,14 @@ async def _process_claimed(
         max_attempts=settings.max_extraction_attempts,
         max_message_attempts=settings.max_message_attempts,
     )
+
+    if outcome.foreign_currency:
+        # extract_and_store already marked the message 'skipped' with
+        # last_error set (core/extraction/currency.py) and never called the
+        # model — checked ahead of `status`, which means nothing here (see
+        # ExtractionOutcome's own docstring).
+        await bot.send_message(chat_id=message.chat_id, text=FOREIGN_CURRENCY_REPLY)
+        return
 
     if outcome.status == ExtractionStatus.OK:
         if outcome.asked_for_clarification:

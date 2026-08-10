@@ -21,6 +21,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from finbot.adapters.telegram.main import build_dispatcher
+from finbot.adapters.telegram.render import EMPTY_REPORT_REPLY, HELP_TEXT
 from finbot.core.models import MessageKind, MessageStatus
 from finbot.repo.models import Message, User
 from tests.support.fake_session import FakeSession
@@ -124,6 +125,47 @@ async def test_day_command_is_persisted_as_skipped_never_pending(
 
     row = (await db_session.execute(select(Message))).scalar_one()
     assert row.raw_text == "/day"
+    assert row.status == MessageStatus.SKIPPED
+
+
+async def test_day_command_still_reaches_the_report_handler(
+    dispatcher: Dispatcher, bot: Bot, db_session: AsyncSession
+) -> None:
+    """Pins that `handlers.unknown_command` — registered last precisely so
+    it never shadows a real command — really is last: a catch-all
+    registered before `Command("day", "week", "month")` would swallow
+    `/day` too, and this is the test that would catch that regression.
+    """
+    update = text_update(update_id=3502, text="/day")
+
+    await dispatcher.feed_raw_update(bot, update)
+
+    sent = [r for r in cast(FakeSession, bot.session).requests if isinstance(r, SendMessage)]
+    assert len(sent) == 1
+    # No expenses seeded for this chat: the report handler ran and reported
+    # accurately empty — EMPTY_REPORT_REPLY, never HELP_TEXT.
+    assert sent[0].text == EMPTY_REPORT_REPLY
+
+
+async def test_unrecognised_command_gets_the_help_text_not_silence(
+    dispatcher: Dispatcher, bot: Bot, db_session: AsyncSession
+) -> None:
+    """The bug this closes: `/weer` and `/mounth` (typos for `/week` and
+    `/month`) matched no handler and got no reply at all — see
+    docs/roadmap.md's Stage 1 hardening.
+    """
+    update = text_update(update_id=3503, text="/weer")
+
+    await dispatcher.feed_raw_update(bot, update)
+
+    sent = [r for r in cast(FakeSession, bot.session).requests if isinstance(r, SendMessage)]
+    assert len(sent) == 1
+    assert sent[0].text == HELP_TEXT
+
+    row = (await db_session.execute(select(Message))).scalar_one()
+    assert row.raw_text == "/weer"
+    # A command, correctly never sent to the model — the catch-all answering
+    # it does not change how it is persisted.
     assert row.status == MessageStatus.SKIPPED
 
 

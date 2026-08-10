@@ -80,10 +80,22 @@ async def mark_done(session: AsyncSession, message_id: int) -> None:
     )
 
 
-async def mark_skipped(session: AsyncSession, message_id: int) -> None:
-    await session.execute(
-        update(Message).where(Message.id == message_id).values(status=MessageStatus.SKIPPED)
-    )
+async def mark_skipped(session: AsyncSession, message_id: int, *, error: str | None = None) -> None:
+    """`error` is for a guard that decided *not* to call the model at all
+    (e.g. the foreign-currency guard in `core/extraction/pipeline.py`) —
+    unlike `schedule_retry`'s `last_error`, there is no failed attempt behind
+    it, only a reason this message was never sent to one.
+    """
+    if error is None:
+        await session.execute(
+            update(Message).where(Message.id == message_id).values(status=MessageStatus.SKIPPED)
+        )
+    else:
+        await session.execute(
+            update(Message)
+            .where(Message.id == message_id)
+            .values(status=MessageStatus.SKIPPED, last_error=error)
+        )
 
 
 async def schedule_retry(

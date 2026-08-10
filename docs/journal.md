@@ -34,6 +34,17 @@ of date.
 
 ---
 
+## 2026-08-10 · stage 1 · worker
+**Did:** first-production-day hardening — a foreign-currency guard refuses ("$", "usd"/"eur", Ukrainian/Russian word forms) before any model call, since the schema has no currency field yet and the model was silently recording "10 dollars" as 10.00 UAH; `setMyCommands` registers a day/week/month/help menu; a catch-all now answers every unrecognised `/command` instead of silence; the confirmation's deleted-line marker is "✖️", not a literal "~". Test count 217 -> 255.
+**Hit:** `/weer` and `/mounth` (typos for `/week`/`/month`) matched no handler at all and got no reply — the exact bug the catch-all fixes, and the one a wrongly-ordered catch-all could just as easily reintroduce by swallowing `/day` instead.
+**Next:** the household's real usage is the only gate that can prove the currency refusal message reads right; nothing to change until it says otherwise.
+**Open:** editing an amount (Stage 6) and the report web-stats link (Stage 7) are recorded as a deferral and a rejection respectively in docs/roadmap.md, not actioned here.
+
+## Learning notes
+The foreign-currency detector needed "attached to a digit" matching ("10дол") alongside whole-word matching ("10 доларів"), which plain `\b` cannot give: `\b` never places a boundary between two `\w` characters, and a digit and a following letter are both `\w`. The fix is the standard Unicode-aware idiom `(?<![^\W\d])`/`(?![^\W\d])` — "not preceded/followed by a `\w` character that isn't a digit", i.e. not a letter — which treats a digit as a valid boundary without hand-listing an alphabet, working for Cyrillic exactly as it does for Latin. Separately, the guard's "skip" outcome deliberately does *not* extend `ExtractionStatus` (exactly Postgres's three-value CHECK constraint on `extractions.status`, per that enum's own docstring) even though it needed a fourth case to signal: reusing it would have required a migration for a value that would never actually appear in that table, since a currency hit writes no `extractions` row at all. A plain `bool` field on `ExtractionOutcome`, checked before `status` is ever read, kept the guard's result out of a type that describes something else.
+
+---
+
 ## 2026-08-10 · stage 1 · lior
 **Did:** ran the Stage 1 model eval — 11 golden cases × 3 repeats, 33 calls/model, five candidates — and set `MODEL_TEXT=google/gemini-3.5-flash-lite`, `MODEL_FALLBACKS=google/gemini-3.6-flash`.
 **Hit:** the pre-registered gate picked cleanly between the two survivors, but three of five candidates failed for reasons that have nothing to do with extraction quality — see Learning notes.

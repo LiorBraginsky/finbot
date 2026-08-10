@@ -1,12 +1,25 @@
-"""Unit tests for finbot.adapters.telegram.main.build_dispatcher.
+"""Unit tests for finbot.adapters.telegram.main.
 
-No Docker, no network: the sessionmaker's engine is never connected, only
-stored by DbSessionMiddleware.
+No Docker, no network: build_dispatcher's sessionmaker's engine is never
+connected, only stored by DbSessionMiddleware; register_commands is proven
+against `FakeSession` (tests/support/fake_session.py), the same fake the
+integration suite uses for a real `Bot` with no socket opened.
 """
 
-from finbot.adapters.telegram.main import build_dispatcher
+from typing import cast
+
+from aiogram import Bot
+from aiogram.methods import SetMyCommands
+from aiogram.types import BotCommandScopeAllGroupChats
+
+from finbot.adapters.telegram.main import (
+    BOT_COMMANDS,
+    build_dispatcher,
+    register_commands,
+)
 from finbot.adapters.telegram.polling import ALLOWED_UPDATES
 from finbot.repo.engine import create_sessionmaker
+from tests.support.fake_session import FakeSession
 
 
 def test_outer_middlewares_run_allowlist_then_db_session_then_persist() -> None:
@@ -57,3 +70,30 @@ def test_no_global_error_handler_is_registered() -> None:
     dp = build_dispatcher(sessionmaker, frozenset({1}))
 
     assert dp.errors.handlers == []
+
+
+async def test_register_commands_sets_the_menu_scoped_to_group_chats() -> None:
+    """`BotCommandScopeAllGroupChats`, not the default scope: this bot only
+    ever runs in the household's group (docs/vision.md), and the default
+    scope also covers private chats it is never added to.
+    """
+    bot = Bot(token="42:TESTTOKEN", session=FakeSession())
+
+    await register_commands(bot)
+
+    sent = [r for r in cast(FakeSession, bot.session).requests if isinstance(r, SetMyCommands)]
+    assert len(sent) == 1
+    assert sent[0].commands == BOT_COMMANDS
+    assert isinstance(sent[0].scope, BotCommandScopeAllGroupChats)
+
+
+def test_bot_commands_matches_the_day_week_month_help_menu_exactly() -> None:
+    """Pins the exact command/description pairs the plan specifies — a
+    change here is a deliberate menu edit, not an accidental typo.
+    """
+    assert [(c.command, c.description) for c in BOT_COMMANDS] == [
+        ("day", "витрати за сьогодні"),
+        ("week", "за тиждень"),
+        ("month", "за місяць"),
+        ("help", "що я вмію"),
+    ]

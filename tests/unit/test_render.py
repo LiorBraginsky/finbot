@@ -103,7 +103,7 @@ def test_a_deleted_row_keeps_its_place_but_loses_its_number_and_is_marked() -> N
     rendered = render_confirmation(lines, today=_TODAY)
 
     assert rendered == (
-        "✅ Записав 2:\n1. 🛒 хліб — 50.00 ₴\n~ 🚕 таксі — 200.00 ₴ (видалено)\nРазом: 50.00 ₴"
+        "✅ Записав 2:\n1. 🛒 хліб — 50.00 ₴\n✖️ 🚕 таксі — 200.00 ₴ (видалено)\nРазом: 50.00 ₴"
     )
 
 

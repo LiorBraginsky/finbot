@@ -51,6 +51,26 @@ EMPTY_REPORT_REPLY = "Нічого не записано за цей періо�
 PROCESSING_FAILED_REPLY = (
     "Не вдалося розпізнати витрату з цього повідомлення. Спробуй, будь ласка, написати ще раз."
 )
+# Sent when `core.extraction.currency.detect_foreign_currency` fires
+# (pipeline.py, before any model call) — currencies are Stage 1.5; until
+# then this refuses rather than silently recording a foreign amount as UAH.
+FOREIGN_CURRENCY_REPLY = (
+    "Поки що я розумію лише гривні. Валюти зʼявляться скоро — а це запиши в гривнях, будь ласка."
+)
+# /help and the catch-all for an unrecognised "/command" (handlers.py) both
+# answer with this — a command Telegram sent to a handler that doesn't exist
+# must never be silence (docs/roadmap.md's Stage 1 hardening).
+HELP_TEXT = (
+    "Я записую витрати з тексту — просто напиши, що і скільки, "
+    "наприклад: «хліб 50, таксі 200».\n\n"
+    "Команди:\n"
+    "/day — витрати за сьогодні\n"
+    "/week — за тиждень\n"
+    "/month — за місяць\n\n"
+    "Помилився? Під моїм повідомленням є кнопки: ✏️ змінює категорію, "
+    "🗑 видаляє запис.\n\n"
+    "Поки що я розумію лише гривні."
+)
 
 
 @dataclass(frozen=True)
@@ -87,8 +107,10 @@ def _row_text(line: ConfirmationLine, *, today: date) -> str:
     if line.deleted:
         # Deleted expenses lose their buttons (handlers.py) and, with them,
         # the number that pointed at those buttons — see ConfirmationLine's
-        # docstring.
-        return f"~ {emoji} {line.item} — {_amount_text(line.amount)} ₴ (видалено)"
+        # docstring. "✖️", not "~": parse_mode is None throughout (see this
+        # module's docstring), so a "~" intended as strikethrough rendered
+        # as a literal tilde instead — a glitch, not a deletion marker.
+        return f"✖️ {emoji} {line.item} — {_amount_text(line.amount)} ₴ (видалено)"
     suffix = _date_suffix(line.occurred_at, today=today)
     return f"{line.index}. {emoji} {line.item} — {_amount_text(line.amount)} ₴{suffix}"
 

@@ -54,6 +54,17 @@ deploying with these settings, and then the stage's actual done-criterion — a 
 recording expenses by text without opening a spreadsheet — which no gate can prove and has
 not started yet. Not marked done until it has.*
 
+*2026-08-10 hardening, from the first day of real production use: a foreign-currency
+guard refuses ("$", "usd"/"eur", Ukrainian/Russian word forms) before the model is ever
+called, since the schema has no currency field yet and the model was silently recording
+"10 dollars" as 10.00 UAH; `setMyCommands` now registers a `day`/`week`/`month`/`help`
+menu and a catch-all answers every unrecognised `/command` with `/help`'s text instead of
+staying silent; and the render module's deleted-line marker is "✖️", not a literal "~"
+that read as a glitch under `parse_mode=None`. A persistent `ReplyKeyboardMarkup` with
+day/week/month buttons was considered and **rejected**, not deferred: it replaces the
+chat's normal keyboard, and this chat is 95% typing — `setMyCommands` covers the same
+need without that cost.*
+
 ---
 
 ## ⬜ Stage 1.5 — Currencies
@@ -136,6 +147,15 @@ Finding out that twelve were enough is the best possible outcome.*
 FastAPI as a second adapter over the same `core`, plus a minimal frontend in `web/`.
 Only if the inline buttons prove insufficient in practice.
 
+- **Editing an amount.** Only the category is editable today (✏️ picks a category; fixing
+  an amount means 🗑 and retyping the whole expense) — deferred deliberately from the
+  2026-08-10 hardening batch, since deleting and retyping is acceptable for now. This
+  stage already owns corrections UX, so the fix belongs here: `ForceReply` on the
+  confirmation message, plus a small `pending_edits` table so the reply survives a
+  restart. The foreign-currency guard must apply to the replied amount too — a
+  household member correcting "50" to "50 dollars" must be refused exactly like a fresh
+  message would be.
+
 ---
 
 ## ⬜ Stage 7 — Dashboard and free-form questions (D)
@@ -144,6 +164,10 @@ Charts, and questions like *"how much did we spend on coffee in June?"*.
 
 **This is where a real agent belongs** — read-only tools or text-to-SQL, with its own
 budget and its own evaluation set. Nowhere earlier.
+
+- A web-stats link belongs on an inline button under a report, not on Telegram's blue
+  Menu button: a Menu button with a WebApp only exists in private chats, and this bot
+  lives in a group (2026-08-10 hardening batch).
 
 ---
 

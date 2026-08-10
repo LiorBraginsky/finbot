@@ -47,6 +47,7 @@ from finbot.adapters.telegram.callbacks import ExpenseAction, SetCategory
 from finbot.adapters.telegram.keyboards import category_keyboard, confirmation_keyboard
 from finbot.adapters.telegram.render import (
     CALLBACK_FAILURE_REPLY,
+    HELP_TEXT,
     UNSUPPORTED_MODALITY_REPLY,
     ConfirmationLine,
     render_confirmation,
@@ -156,9 +157,26 @@ def build_router(tz: ZoneInfo) -> Router:
         result = await reports.summary(session, period=period, date_from=date_from, date_to=date_to)
         await message.answer(render_report(result))
 
+    @router.message(Command("help"))
+    async def help_command(message: Message) -> None:
+        await message.answer(HELP_TEXT)
+
     @router.message(F.voice | F.photo)
     async def unsupported_modality(message: Message) -> None:
         await message.answer(UNSUPPORTED_MODALITY_REPLY)
+
+    # Last message handler, deliberately: aiogram tries a router's message
+    # handlers in registration order and stops at the first whose filter
+    # matches, so anything specific — /ping, /day|week|month, /help — must
+    # be registered above this or it would never be reached. This is the
+    # fix for a `/command` Telegram sent to no handler at all going
+    # completely unanswered (docs/roadmap.md's Stage 1 hardening); plain
+    # expense text never reaches here because F.text.startswith("/")
+    # excludes it, leaving that text with no handler on purpose (see this
+    # module's docstring).
+    @router.message(F.text.startswith("/"))
+    async def unknown_command(message: Message) -> None:
+        await message.answer(HELP_TEXT)
 
     @router.callback_query(ExpenseAction.filter(F.action == "del"))
     async def delete_expense(
