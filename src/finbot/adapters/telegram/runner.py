@@ -73,7 +73,9 @@ def _confirmation_lines(
     ]
 
 
-def _fetch_audio_for(bot: Bot, message: Message) -> Callable[[], Awaitable[bytes]]:
+def _fetch_audio_for(
+    bot: Bot, message: Message, *, ffmpeg_timeout_seconds: int
+) -> Callable[[], Awaitable[bytes]]:
     """Binds `adapters.telegram.audio.fetch_and_convert` to this message's
     `bot`/`file_id` — the only place aiogram's download API and `ffmpeg` are
     reachable from, and exactly the seam `core.extraction.pipeline` expects
@@ -82,7 +84,7 @@ def _fetch_audio_for(bot: Bot, message: Message) -> Callable[[], Awaitable[bytes
     """
     if message.file_id is None:
         raise ValueError(f"voice message {message.id} has no file_id")
-    return partial(fetch_and_convert, bot, message.file_id)
+    return partial(fetch_and_convert, bot, message.file_id, timeout_seconds=ffmpeg_timeout_seconds)
 
 
 async def _process_claimed(
@@ -106,7 +108,11 @@ async def _process_claimed(
 
     is_voice = message.kind == MessageKind.VOICE
     models = settings.voice_model_candidates if is_voice else settings.model_candidates
-    fetch_audio = _fetch_audio_for(bot, message) if is_voice else None
+    fetch_audio = (
+        _fetch_audio_for(bot, message, ffmpeg_timeout_seconds=settings.ffmpeg_timeout_seconds)
+        if is_voice
+        else None
+    )
 
     outcome = await extract_and_store(
         session=session,

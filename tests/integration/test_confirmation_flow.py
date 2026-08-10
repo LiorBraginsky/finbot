@@ -223,7 +223,9 @@ async def test_voice_message_shows_the_transcript_above_the_numbered_confirmatio
     """
     await _seed_pending_voice_message(db_session)
 
-    async def fake_fetch_and_convert(_bot: Bot, file_id: str) -> bytes:
+    async def fake_fetch_and_convert(
+        _bot: Bot, file_id: str, *, timeout_seconds: int = 30
+    ) -> bytes:
         assert file_id == "voice-file-id"
         return b"fake-mp3-bytes"
 

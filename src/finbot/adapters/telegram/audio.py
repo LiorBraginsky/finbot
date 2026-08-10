@@ -64,13 +64,23 @@ async def download_voice(bot: Bot, file_id: str) -> bytes:
     return ogg_bytes
 
 
-async def convert_to_mp3(ogg_bytes: bytes, *, ffmpeg_path: str = "ffmpeg") -> bytes:
+async def convert_to_mp3(
+    ogg_bytes: bytes, *, ffmpeg_path: str = "ffmpeg", timeout_seconds: int = 30
+) -> bytes:
     """Runs `ffmpeg` with `ogg_bytes` on stdin and mp3 bytes on stdout — no
     temp files. `ffmpeg_path` defaults to resolving `ffmpeg` on `PATH`
     (present in the image; see `infra/Dockerfile`) and exists as a parameter
     only so tests can point it at a fixture executable instead of a real
     binary (this project does not require `ffmpeg` on the machine running
     `pytest`, only inside the built image — see the stage's own `Done when`).
+
+    `timeout_seconds` (`Settings.ffmpeg_timeout_seconds`) is not optional:
+    the model call has its own timeout, the download has aiogram's own 30s,
+    and without a deadline here `ffmpeg` would be the one external call on
+    the drain path that could hang forever — the claimed row would sit in
+    `processing` until the container restarts, since `reset_processing`
+    only runs at startup (ADR-0013 §5). On expiry the process is killed and
+    reaped (never left as a zombie) before raising.
     """
     try:
         process = await asyncio.create_subprocess_exec(
@@ -83,19 +93,37 @@ async def convert_to_mp3(ogg_bytes: bytes, *, ffmpeg_path: str = "ffmpeg") -> by
     except OSError as exc:
         raise AudioFetchError(f"failed to start ffmpeg ({type(exc).__name__}: {exc})") from exc
 
-    stdout, stderr = await process.communicate(input=ogg_bytes)
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(input=ogg_bytes), timeout=timeout_seconds
+        )
+    except TimeoutError as exc:
+        process.kill()
+        await process.wait()
+        raise AudioFetchError(f"ffmpeg did not finish within {timeout_seconds}s") from exc
+
     if process.returncode != 0:
         detail = stderr.decode("utf-8", errors="replace").strip()[:500]
         raise AudioFetchError(f"ffmpeg exited {process.returncode}: {detail}")
+    if not stdout:
+        # A clean exit with nothing on stdout is not success: base64-
+        # encoding b"" and sending it as audio would bill a real model call
+        # for silence, and the miss would land in the dataset looking like
+        # a model failure rather than what it actually was — a conversion
+        # that produced nothing.
+        raise AudioFetchError("ffmpeg exited 0 but produced no output")
     return stdout
 
 
-async def fetch_and_convert(bot: Bot, file_id: str, *, ffmpeg_path: str = "ffmpeg") -> bytes:
+async def fetch_and_convert(
+    bot: Bot, file_id: str, *, ffmpeg_path: str = "ffmpeg", timeout_seconds: int = 30
+) -> bytes:
     """Downloads and converts one voice note. Everything that can go wrong
-    here — a download failure, an oversized file, an ffmpeg failure — is
-    raised as `AudioFetchError`, and `core.extraction.pipeline` treats all
-    three identically: mark the message for retry, never write an
-    `extractions` row, because none of the three ever reached a model.
+    here — a download failure, an oversized file, an ffmpeg failure or
+    timeout, empty output — is raised as `AudioFetchError`, and
+    `core.extraction.pipeline` treats all of them identically: mark the
+    message for retry, never write an `extractions` row, because none of
+    them ever reached a model.
     """
     ogg_bytes = await download_voice(bot, file_id)
-    return await convert_to_mp3(ogg_bytes, ffmpeg_path=ffmpeg_path)
+    return await convert_to_mp3(ogg_bytes, ffmpeg_path=ffmpeg_path, timeout_seconds=timeout_seconds)

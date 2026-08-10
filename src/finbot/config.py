@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     # Voice notes longer than this are refused before any download
     # (docs/roadmap.md Stage 2, spec §7).
     max_voice_seconds: int = 120
+    # ADR-0013 §5's deadline discipline applied to the one external call on
+    # the drain path that had none: the model has llm_timeout_seconds, the
+    # download has aiogram's own 30s, and ffmpeg — with no bound — could hang
+    # a claimed row in 'processing' forever, since reset_processing only
+    # runs at startup.
+    ffmpeg_timeout_seconds: int = 30
 
     @property
     def allowed_user_ids(self) -> frozenset[int]:
