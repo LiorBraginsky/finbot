@@ -60,6 +60,16 @@ A conditional fallback buys nothing here and costs a second failure mode:
 - ADR-0004's own Consequences line is superseded by this one; ADR-0004's Decision and
   Rationale sections (OpenRouter as the gateway, the `{transcript, expenses[]}` shape) are
   untouched.
+- **A repair round re-sends the whole base64 audio, not just a corrected prompt.**
+  `core.extraction.pipeline`'s shared repair loop (`_run_extraction_round`) treats voice
+  exactly like text: `max_extraction_attempts × max_message_attempts` retries, up to ten
+  for the settings Stage 1 chose. For text that is ten cheap text calls; for voice it is
+  up to ten billed *audio* calls for one note, since each attempt — including every
+  repair — carries the original audio again, not only the growing text conversation.
+  With strict structured output the repair path is expected to be rare, so this is left
+  as-is rather than shrinking the attempt budget or building an audio-specific repair
+  path — but it is a real cost multiplier the owner should see before picking a
+  per-minute- or per-second-priced audio model, not discover from a bill.
 
 ## Rejected
 
