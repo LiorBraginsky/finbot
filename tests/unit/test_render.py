@@ -11,6 +11,8 @@ from finbot.adapters.telegram.render import (
     ConfirmationLine,
     render_confirmation,
     render_report,
+    transcript_line,
+    voice_too_long_reply,
 )
 from finbot.core.categories.catalog import SLUGS
 from finbot.core.reporting import Report, ReportLine
@@ -110,6 +112,60 @@ def test_a_deleted_row_keeps_its_place_but_loses_its_number_and_is_marked() -> N
 def test_render_confirmation_rejects_an_empty_sequence() -> None:
     with pytest.raises(ValueError, match="at least one line"):
         render_confirmation([], today=_TODAY)
+
+
+def test_transcript_line_wraps_in_microphone_and_guillemets() -> None:
+    assert transcript_line("хліб пʼятдесят") == "🎤 «хліб пʼятдесят»"
+
+
+def test_render_confirmation_shows_the_transcript_above_a_single_expense() -> None:
+    lines = [
+        ConfirmationLine(
+            index=1,
+            expense_id=10,
+            item="хліб",
+            amount=Decimal("50.00"),
+            category_slug="groceries",
+            occurred_at=_TODAY,
+        )
+    ]
+
+    rendered = render_confirmation(lines, today=_TODAY, transcript="хліб пʼятдесят")
+
+    assert rendered == "🎤 «хліб пʼятдесят»\n✅ 🛒 хліб — 50.00 ₴"
+
+
+def test_render_confirmation_shows_the_transcript_above_a_numbered_list() -> None:
+    lines = [
+        ConfirmationLine(
+            index=1,
+            expense_id=10,
+            item="хліб",
+            amount=Decimal("50.00"),
+            category_slug="groceries",
+            occurred_at=_TODAY,
+        ),
+        ConfirmationLine(
+            index=2,
+            expense_id=20,
+            item="таксі",
+            amount=Decimal("200.00"),
+            category_slug="transport",
+            occurred_at=_TODAY,
+        ),
+    ]
+
+    rendered = render_confirmation(lines, today=_TODAY, transcript="хліб пʼятдесят і таксі двісті")
+
+    assert rendered == (
+        "🎤 «хліб пʼятдесят і таксі двісті»\n"
+        "✅ Записав 2:\n1. 🛒 хліб — 50.00 ₴\n2. 🚕 таксі — 200.00 ₴\nРазом: 250.00 ₴"
+    )
+
+
+def test_voice_too_long_reply_names_the_configured_limit() -> None:
+    assert "120" in voice_too_long_reply(120)
+    assert "45" in voice_too_long_reply(45)
 
 
 def test_empty_report_returns_the_empty_state_text() -> None:

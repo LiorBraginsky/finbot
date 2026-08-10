@@ -54,6 +54,20 @@ def voice_update(
     return update
 
 
+def photo_update(
+    update_id: int,
+    *,
+    message_id: int = 1,
+    user_id: int = ALLOWED_USER_ID,
+    file_id: str = "photo-file-id",
+) -> dict[str, Any]:
+    update = _base_message(update_id, message_id, user_id)
+    update["message"]["photo"] = [
+        {"file_id": file_id, "file_unique_id": f"{file_id}-unique", "width": 1280, "height": 1280}
+    ]
+    return update
+
+
 def sticker_update(
     update_id: int,
     *,

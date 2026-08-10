@@ -21,6 +21,7 @@ from aiogram.methods import SendMessage
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+import finbot.adapters.telegram.runner as runner_module
 from finbot.adapters.telegram.render import NO_EXPENSE_REPLY
 from finbot.adapters.telegram.runner import drain_loop
 from finbot.config import Settings
@@ -36,7 +37,7 @@ from tests.support.updates import ALLOWED_USER_ID, CHAT_ID
 _FIXTURES_DIR = Path(__file__).parents[1] / "fixtures" / "openrouter"
 
 
-def _settings(postgres_url: str) -> Settings:
+def _settings(postgres_url: str, *, model_voice: str = "") -> Settings:
     return Settings(
         telegram_bot_token="42:TESTTOKEN",
         telegram_allowed_user_ids=str(ALLOWED_USER_ID),
@@ -44,6 +45,7 @@ def _settings(postgres_url: str) -> Settings:
         database_url=postgres_url,
         openrouter_api_key="sk-or-fake-not-a-real-key",
         model_text="google/gemini-3.5-flash-lite",
+        model_voice=model_voice,
     )
 
 
@@ -92,6 +94,24 @@ async def _seed_pending_message(session: AsyncSession, raw_text: str) -> None:
         kind=MessageKind.TEXT,
         raw_text=raw_text,
         file_id=None,
+    )
+    user_id = await users.get_or_create(session, incoming.telegram_user_id, incoming.display_name)
+    message_id = await messages.add_if_new(session, incoming, user_id)
+    assert message_id is not None
+    await session.commit()
+
+
+async def _seed_pending_voice_message(session: AsyncSession, *, duration_seconds: int = 5) -> None:
+    incoming = IncomingMessage(
+        telegram_update_id=abs(hash(("voice", duration_seconds))) % 1_000_000_000,
+        telegram_message_id=1,
+        chat_id=CHAT_ID,
+        telegram_user_id=ALLOWED_USER_ID,
+        display_name="Alice",
+        kind=MessageKind.VOICE,
+        raw_text=None,
+        file_id="voice-file-id",
+        duration_seconds=duration_seconds,
     )
     user_id = await users.get_or_create(session, incoming.telegram_user_id, incoming.display_name)
     message_id = await messages.add_if_new(session, incoming, user_id)
@@ -190,3 +210,48 @@ async def test_zero_expenses_sends_the_clarification_reply_with_no_keyboard(
     db_session.expire_all()
     expense_rows = (await db_session.execute(select(Expense))).scalars().all()
     assert expense_rows == []
+
+
+async def test_voice_message_shows_the_transcript_above_the_numbered_confirmation(
+    bot: Bot, db_session: AsyncSession, postgres_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end through `drain_loop`: the voice-only routing in
+    `_process_claimed` (`voice_model_candidates`, `_fetch_audio_for`) and
+    `render_confirmation`'s `transcript` line. `fetch_and_convert` is faked
+    here — this is `runner.py`'s own routing under test, not `adapters.
+    telegram.audio`'s download/ffmpeg mechanics, which have their own tests.
+    """
+    await _seed_pending_voice_message(db_session)
+
+    async def fake_fetch_and_convert(_bot: Bot, file_id: str) -> bytes:
+        assert file_id == "voice-file-id"
+        return b"fake-mp3-bytes"
+
+    monkeypatch.setattr(runner_module, "fetch_and_convert", fake_fetch_and_convert)
+
+    engine = create_async_engine(postgres_url, pool_pre_ping=True, json_serializer=json_serializer)
+    sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
+    llm = FakeLlmClient(_load_fixture("ok_voice_two_items"))
+    settings = _settings(postgres_url, model_voice="google/gemini-2.5-flash")
+
+    try:
+        await _run_one_drain_tick(bot=bot, sessionmaker=sessionmaker, llm=llm, settings=settings)
+    finally:
+        await engine.dispose()
+
+    sent = [r for r in cast(FakeSession, bot.session).requests if isinstance(r, SendMessage)]
+    assert len(sent) == 1
+    text = sent[0].text
+    assert text is not None
+    assert text == (
+        "🎤 «хліб пʼятдесят і таксі двісті»\n"
+        "✅ Записав 2:\n"
+        "1. 🛒 хліб — 50.00 ₴\n"
+        "2. 🚕 таксі — 200.00 ₴\n"
+        "Разом: 250.00 ₴"
+    )
+    assert sent[0].reply_markup is not None
+
+    db_session.expire_all()
+    expense_rows = (await db_session.execute(select(Expense).order_by(Expense.id))).scalars().all()
+    assert len(expense_rows) == 2

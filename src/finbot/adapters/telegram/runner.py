@@ -17,26 +17,31 @@ lands relative to `bot_message_id` being stamped, because the buttons carry
 import asyncio
 import contextlib
 import logging
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, date, datetime
+from functools import partial
 
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from finbot.adapters.telegram.audio import fetch_and_convert
 from finbot.adapters.telegram.keyboards import confirmation_keyboard
 from finbot.adapters.telegram.render import (
     FOREIGN_CURRENCY_REPLY,
     NO_EXPENSE_REPLY,
     PROCESSING_FAILED_REPLY,
+    VOICE_NOT_CONFIGURED_REPLY,
     ConfirmationLine,
     render_confirmation,
+    transcript_line,
+    voice_too_long_reply,
 )
 from finbot.config import Settings
 from finbot.core.categories.catalog import CATALOG
 from finbot.core.extraction.pipeline import backoff_seconds, extract_and_store
 from finbot.core.extraction.ports import LlmClient
 from finbot.core.extraction.schema import ExpenseDraft
-from finbot.core.models import ExtractionStatus, MessageStatus
+from finbot.core.models import ExtractionStatus, MessageKind, MessageStatus
 from finbot.repo import categories, expenses, messages
 from finbot.repo.models import Message
 
@@ -68,6 +73,18 @@ def _confirmation_lines(
     ]
 
 
+def _fetch_audio_for(bot: Bot, message: Message) -> Callable[[], Awaitable[bytes]]:
+    """Binds `adapters.telegram.audio.fetch_and_convert` to this message's
+    `bot`/`file_id` — the only place aiogram's download API and `ffmpeg` are
+    reachable from, and exactly the seam `core.extraction.pipeline` expects
+    (its own `fetch_audio` parameter, never imported directly — CLAUDE.md
+    rule 3).
+    """
+    if message.file_id is None:
+        raise ValueError(f"voice message {message.id} has no file_id")
+    return partial(fetch_and_convert, bot, message.file_id)
+
+
 async def _process_claimed(
     *,
     session: AsyncSession,
@@ -87,6 +104,10 @@ async def _process_claimed(
     await session.commit()
     today = datetime.now(tz=settings.tz).date()
 
+    is_voice = message.kind == MessageKind.VOICE
+    models = settings.voice_model_candidates if is_voice else settings.model_candidates
+    fetch_audio = _fetch_audio_for(bot, message) if is_voice else None
+
     outcome = await extract_and_store(
         session=session,
         message=message,
@@ -94,28 +115,43 @@ async def _process_claimed(
         catalog=CATALOG,
         category_ids=category_ids,
         today=today,
-        models=settings.model_candidates,
+        models=models,
         max_attempts=settings.max_extraction_attempts,
         max_message_attempts=settings.max_message_attempts,
+        max_voice_seconds=settings.max_voice_seconds,
+        fetch_audio=fetch_audio,
     )
+
+    if outcome.voice_not_configured:
+        await bot.send_message(chat_id=message.chat_id, text=VOICE_NOT_CONFIGURED_REPLY)
+        return
+
+    if outcome.voice_too_long:
+        await bot.send_message(
+            chat_id=message.chat_id, text=voice_too_long_reply(settings.max_voice_seconds)
+        )
+        return
 
     if outcome.foreign_currency:
         # extract_and_store already marked the message 'skipped' with
-        # last_error set (core/extraction/currency.py) and never called the
-        # model — checked ahead of `status`, which means nothing here (see
-        # ExtractionOutcome's own docstring).
+        # last_error set (core/extraction/currency.py) and, for text, never
+        # called the model — checked ahead of `status`, which means nothing
+        # here (see ExtractionOutcome's own docstring).
         await bot.send_message(chat_id=message.chat_id, text=FOREIGN_CURRENCY_REPLY)
         return
 
     if outcome.status == ExtractionStatus.OK:
         if outcome.asked_for_clarification:
-            await bot.send_message(chat_id=message.chat_id, text=NO_EXPENSE_REPLY)
+            reply = NO_EXPENSE_REPLY
+            if outcome.transcript is not None:
+                reply = f"{transcript_line(outcome.transcript)}\n{NO_EXPENSE_REPLY}"
+            await bot.send_message(chat_id=message.chat_id, text=reply)
             return
 
         lines = _confirmation_lines(outcome.expense_ids, outcome.drafts, today=today)
         sent = await bot.send_message(
             chat_id=message.chat_id,
-            text=render_confirmation(lines, today=today),
+            text=render_confirmation(lines, today=today, transcript=outcome.transcript),
             reply_markup=confirmation_keyboard(lines),
         )
         await expenses.set_bot_message_id(session, outcome.expense_ids, sent.message_id)
