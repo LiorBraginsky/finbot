@@ -23,7 +23,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from finbot.core.extraction.schema import ExtractionResult
+from finbot.core.extraction.schema import ExtractionResult, VoiceExtractionResult
 
 
 @dataclass(frozen=True)
@@ -108,6 +108,37 @@ def _nearest_rank_percentile(values: tuple[int, ...], quantile: float) -> int:
     return ordered[rank]
 
 
+def _parse_expected(payload: dict[str, Any], path: Path) -> tuple[ExpectedExpense, ...]:
+    """Shared by `load_golden_cases` and `load_voice_golden_cases`: both
+    formats carry the same `expected` array shape (docs/roadmap.md Stage 2's
+    `voice_v1.jsonl` adds `expected_transcript_contains` alongside it, never
+    inside it).
+    """
+    expected_items: list[ExpectedExpense] = []
+    for item in payload["expected"]:
+        # CLAUDE.md rule 2 applies to a hand-written fixture as much as
+        # to a wire response: a bare JSON number here would parse fine
+        # today but re-opens exactly the float-money hole `parse_float`
+        # exists to close the moment someone edits this file by hand.
+        # A raise, not a bare `assert` (S101; also stripped by `python
+        # -O`), mirrors core.extraction.pipeline's own convention.
+        if not isinstance(item["amount"], str):
+            msg = (
+                f"{path}: golden case {payload['id']!r} amount must be a JSON string, "
+                f"never a bare number, got {item['amount']!r}"
+            )
+            raise TypeError(msg)
+        expected_items.append(
+            ExpectedExpense(
+                item=item["item"],
+                amount=Decimal(item["amount"]),
+                category=item["category"],
+                occurred_offset_days=int(item["occurred_offset_days"]),
+            )
+        )
+    return tuple(expected_items)
+
+
 def load_golden_cases(path: Path) -> list[GoldenCase]:
     """One JSON object per line. Amounts are JSON strings (`"50.00"`), never
     bare numbers — CLAUDE.md rule 2 applies to a hand-written fixture just as
@@ -120,31 +151,11 @@ def load_golden_cases(path: Path) -> list[GoldenCase]:
         if not stripped:
             continue
         payload: dict[str, Any] = json.loads(stripped, parse_float=Decimal)
-        expected_items: list[ExpectedExpense] = []
-        for item in payload["expected"]:
-            # CLAUDE.md rule 2 applies to a hand-written fixture as much as
-            # to a wire response: a bare JSON number here would parse fine
-            # today but re-opens exactly the float-money hole `parse_float`
-            # exists to close the moment someone edits this file by hand.
-            # A raise, not a bare `assert` (S101; also stripped by `python
-            # -O`), mirrors core.extraction.pipeline's own convention.
-            if not isinstance(item["amount"], str):
-                msg = (
-                    f"{path}: golden case {payload['id']!r} amount must be a JSON string, "
-                    f"never a bare number, got {item['amount']!r}"
-                )
-                raise TypeError(msg)
-            expected_items.append(
-                ExpectedExpense(
-                    item=item["item"],
-                    amount=Decimal(item["amount"]),
-                    category=item["category"],
-                    occurred_offset_days=int(item["occurred_offset_days"]),
-                )
-            )
         cases.append(
             GoldenCase(
-                case_id=payload["id"], raw_text=payload["input"], expected=tuple(expected_items)
+                case_id=payload["id"],
+                raw_text=payload["input"],
+                expected=_parse_expected(payload, path),
             )
         )
     return cases
@@ -248,6 +259,206 @@ def render_table(results: list[ModelResult]) -> str:
             f"| {result.amount_exact}/{result.total} "
             f"| {result.category_exact}/{result.total} "
             f"| {result.date_exact}/{result.total} "
+            f"| {cost} "
+            f"| {result.latency_p50_ms} "
+            f"| {result.latency_p95_ms} |"
+        )
+    return "\n".join(rows)
+
+
+# --- voice (docs/roadmap.md Stage 2) ------------------------------------------
+#
+# A parallel set of hand-maintained shapes, deliberately not the text ones
+# with an optional field bolted on — same reasoning as `core.extraction.
+# schema.voice_json_schema` next to `text_json_schema`: the two case formats
+# and score shapes are free to evolve independently, and proximity in one
+# file is the guard, not a shared abstraction between them.
+
+
+@dataclass(frozen=True)
+class VoiceGoldenCase:
+    case_id: str
+    audio_filename: str
+    expected: tuple[ExpectedExpense, ...]
+    # A cheap deterministic proxy for "did it hear the words", without a
+    # judge model (ADR-0014 §7: never call a judge where an exact check
+    # exists) — every substring here must appear in the model's own
+    # `transcript`, case-insensitively.
+    expected_transcript_contains: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class VoiceCaseScore:
+    case_id: str
+    schema_ok: bool
+    count_exact: bool
+    amount_exact: bool
+    category_exact: bool
+    date_exact: bool
+    transcript_ok: bool
+    cost_usd: Decimal | None
+    latency_ms: int | None
+
+
+@dataclass(frozen=True)
+class VoiceModelResult:
+    model: str
+    total: int
+    schema_ok: int
+    count_exact: int
+    amount_exact: int
+    category_exact: int
+    date_exact: int
+    transcript_ok: int
+    costs: tuple[Decimal, ...]
+    latencies_ms: tuple[int, ...]
+
+    @property
+    def cost_mean(self) -> Decimal | None:
+        if not self.costs:
+            return None
+        return sum(self.costs, Decimal("0")) / len(self.costs)
+
+    @property
+    def latency_p50_ms(self) -> int:
+        return _nearest_rank_percentile(self.latencies_ms, 0.50)
+
+    @property
+    def latency_p95_ms(self) -> int:
+        return _nearest_rank_percentile(self.latencies_ms, 0.95)
+
+
+def load_voice_golden_cases(path: Path) -> list[VoiceGoldenCase]:
+    """One JSON object per line, `evals/golden/voice_v1.jsonl`'s own shape:
+    `id`, `audio` (a filename under `evals/golden/voice/`, git-ignored —
+    ADR-0009), `expected` (identical shape to the text set), and
+    `expected_transcript_contains` (a list of substrings).
+    """
+    cases: list[VoiceGoldenCase] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        payload: dict[str, Any] = json.loads(stripped, parse_float=Decimal)
+        cases.append(
+            VoiceGoldenCase(
+                case_id=payload["id"],
+                audio_filename=payload["audio"],
+                expected=_parse_expected(payload, path),
+                expected_transcript_contains=tuple(payload["expected_transcript_contains"]),
+            )
+        )
+    return cases
+
+
+def score_voice_case(
+    case: VoiceGoldenCase,
+    today: date,
+    resolved: VoiceExtractionResult,
+    *,
+    cost_usd: Decimal | None,
+    latency_ms: int,
+) -> VoiceCaseScore:
+    """Mirrors `score_case` for `amount_exact`/`count_exact`/`category_exact`/
+    `date_exact` — see that function's docstring — plus `transcript_ok`: all
+    of `expected_transcript_contains` present in `resolved.transcript`,
+    case-insensitively.
+    """
+    transcript_ok = all(
+        substring.lower() in resolved.transcript.lower()
+        for substring in case.expected_transcript_contains
+    )
+
+    actual = resolved.expenses
+    count_exact = len(actual) == len(case.expected)
+    if not count_exact:
+        return VoiceCaseScore(
+            case_id=case.case_id,
+            schema_ok=True,
+            count_exact=False,
+            amount_exact=False,
+            category_exact=False,
+            date_exact=False,
+            transcript_ok=transcript_ok,
+            cost_usd=cost_usd,
+            latency_ms=latency_ms,
+        )
+
+    pairs = list(zip(actual, case.expected, strict=True))
+    amount_exact = all(a.amount == e.amount for a, e in pairs)
+    category_exact = all(a.category == e.category for a, e in pairs)
+    date_exact = all(
+        a.occurred_at == today + timedelta(days=e.occurred_offset_days) for a, e in pairs
+    )
+    return VoiceCaseScore(
+        case_id=case.case_id,
+        schema_ok=True,
+        count_exact=True,
+        amount_exact=amount_exact,
+        category_exact=category_exact,
+        date_exact=date_exact,
+        transcript_ok=transcript_ok,
+        cost_usd=cost_usd,
+        latency_ms=latency_ms,
+    )
+
+
+def failed_voice_case_score(
+    case_id: str, *, cost_usd: Decimal | None, latency_ms: int | None
+) -> VoiceCaseScore:
+    """Mirrors `failed_case_score`: the response never became a usable
+    `VoiceExtractionResult`, so every metric — `transcript_ok` included, since
+    there is no transcript to check — is a miss.
+    """
+    return VoiceCaseScore(
+        case_id=case_id,
+        schema_ok=False,
+        count_exact=False,
+        amount_exact=False,
+        category_exact=False,
+        date_exact=False,
+        transcript_ok=False,
+        cost_usd=cost_usd,
+        latency_ms=latency_ms,
+    )
+
+
+def aggregate_voice(model: str, scores: list[VoiceCaseScore]) -> VoiceModelResult:
+    return VoiceModelResult(
+        model=model,
+        total=len(scores),
+        schema_ok=sum(score.schema_ok for score in scores),
+        count_exact=sum(score.count_exact for score in scores),
+        amount_exact=sum(score.amount_exact for score in scores),
+        category_exact=sum(score.category_exact for score in scores),
+        date_exact=sum(score.date_exact for score in scores),
+        transcript_ok=sum(score.transcript_ok for score in scores),
+        costs=tuple(score.cost_usd for score in scores if score.cost_usd is not None),
+        latencies_ms=tuple(score.latency_ms for score in scores if score.latency_ms is not None),
+    )
+
+
+def render_voice_table(results: list[VoiceModelResult]) -> str:
+    """Mirrors `render_table`, with `transcript_ok` alongside the four exact
+    metrics text also has.
+    """
+    header = (
+        "| model | schema_ok | count_exact | amount_exact | category_exact "
+        "| date_exact | transcript_ok | mean cost (USD) | p50 latency (ms) "
+        "| p95 latency (ms) |"
+    )
+    separator = "|---|---|---|---|---|---|---|---|---|---|"
+    rows = [header, separator]
+    for result in results:
+        cost = f"{result.cost_mean:.6f}" if result.cost_mean is not None else "n/a"
+        rows.append(
+            f"| {result.model} "
+            f"| {result.schema_ok}/{result.total} "
+            f"| {result.count_exact}/{result.total} "
+            f"| {result.amount_exact}/{result.total} "
+            f"| {result.category_exact}/{result.total} "
+            f"| {result.date_exact}/{result.total} "
+            f"| {result.transcript_ok}/{result.total} "
             f"| {cost} "
             f"| {result.latency_p50_ms} "
             f"| {result.latency_p95_ms} |"

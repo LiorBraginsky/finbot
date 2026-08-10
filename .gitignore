@@ -20,6 +20,16 @@ media/
 *.png
 !docs/**/*.png
 
+# --- Stage 2 voice golden audio (owner's own recordings, ADR-0009) ---------
+# evals/golden/voice_v1.jsonl (the cases) is committed; the audio it
+# references is not — it is the owner's own household recordings, large, and
+# ADR-0009 keeps household audio out of a public repo. Already covered by
+# *.ogg/*.oga above for the usual case; this is the explicit, documented
+# statement of that for this specific directory, and covers any other
+# format a recording might be saved in. See evals/golden/voice/README.md.
+evals/golden/voice/*
+!evals/golden/voice/README.md
+
 # --- agent / editor local state --------------------------------------------
 .claude/settings.local.json
 .claude/sessions/

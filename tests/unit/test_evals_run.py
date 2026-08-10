@@ -9,6 +9,7 @@ exercise the real `OpenRouterClient` — the seam is `LlmClient`, and neither
 function can tell the difference.
 """
 
+import base64
 import json
 from collections.abc import Sequence
 from datetime import date, timedelta
@@ -18,13 +19,21 @@ from pathlib import Path
 import pytest
 from evals.run import (
     _DEFAULT_CASES_PATH,
+    _DEFAULT_VOICE_CASES_PATH,
     MissingApiKeyError,
     _parse_args,
     load_eval_settings,
     run_case,
     run_model,
+    run_voice_case,
 )
-from evals.scoring import ExpectedExpense, GoldenCase, load_golden_cases, render_table
+from evals.scoring import (
+    ExpectedExpense,
+    GoldenCase,
+    VoiceGoldenCase,
+    load_golden_cases,
+    render_table,
+)
 
 from finbot.core.extraction.ports import LlmError
 from finbot.core.money import loads_decimal
@@ -321,3 +330,106 @@ def test_parse_args_defaults() -> None:
 def test_parse_args_accepts_an_explicit_today_override() -> None:
     args = _parse_args(["--models", "a", "--today", "2026-08-10"])
     assert args.today == date(2026, 8, 10)
+
+
+def test_parse_args_modality_defaults_to_text() -> None:
+    args = _parse_args(["--models", "a"])
+    assert args.modality == "text"
+
+
+def test_parse_args_accepts_modality_voice() -> None:
+    args = _parse_args(["--models", "a", "--modality", "voice"])
+    assert args.modality == "voice"
+
+
+def test_parse_args_rejects_an_unknown_modality() -> None:
+    with pytest.raises(SystemExit):
+        _parse_args(["--models", "a", "--modality", "photo"])
+
+
+# --- run_voice_case ----------------------------------------------------------
+
+
+def _voice_response_body(
+    *, model: str, transcript: str, expenses: list[dict], cost: float | None
+) -> str:
+    content = json.dumps({"transcript": transcript, "expenses": expenses}, ensure_ascii=False)
+    assistant_message = {"role": "assistant", "content": content}
+    return json.dumps(
+        {
+            "id": "gen-voice-test",
+            "model": model,
+            "object": "chat.completion",
+            "created": 0,
+            "choices": [{"index": 0, "message": assistant_message}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2, "cost": cost},
+        }
+    )
+
+
+async def test_run_voice_case_scores_a_matching_transcript_and_expense_exact(
+    tmp_path: Path,
+) -> None:
+    audio_path = tmp_path / "case.oga"
+    audio_path.write_bytes(b"not-real-audio-just-test-bytes")
+    case = VoiceGoldenCase(
+        case_id="v1",
+        audio_filename="case.oga",
+        expected=(ExpectedExpense("хліб", Decimal("50.00"), "groceries", 0),),
+        expected_transcript_contains=("хліб", "50"),
+    )
+    body = _voice_response_body(
+        model="google/gemini-2.5-flash",
+        transcript="хліб 50",
+        expenses=[{"item": "хліб", "amount": 50, "category": "groceries", "occurred_at": None}],
+        cost=0.0002,
+    )
+    client = FakeLlmClient(body)
+
+    score = await run_voice_case(
+        client, "google/gemini-2.5-flash", case, _TODAY, audio_dir=tmp_path
+    )
+
+    assert score.schema_ok
+    assert score.count_exact
+    assert score.amount_exact
+    assert score.category_exact
+    assert score.date_exact
+    assert score.transcript_ok
+    assert score.cost_usd == Decimal("0.0002")
+
+
+async def test_run_voice_case_sends_the_audio_file_as_base64_input_audio(tmp_path: Path) -> None:
+    audio_path = tmp_path / "case.oga"
+    audio_path.write_bytes(b"raw-audio-bytes")
+    case = VoiceGoldenCase(
+        case_id="v1", audio_filename="case.oga", expected=(), expected_transcript_contains=()
+    )
+    client = FakeLlmClient(_voice_response_body(model="m", transcript="", expenses=[], cost=None))
+
+    await run_voice_case(client, "m", case, _TODAY, audio_dir=tmp_path)
+
+    sent_content = client.requests[0].messages[-1]["content"]
+    assert sent_content[0]["type"] == "input_audio"
+    assert sent_content[0]["input_audio"]["data"] == base64.b64encode(b"raw-audio-bytes").decode(
+        "ascii"
+    )
+
+
+async def test_run_voice_case_treats_a_transport_error_as_a_failed_case(tmp_path: Path) -> None:
+    (tmp_path / "whatever.oga").write_bytes(b"irrelevant")
+    case = VoiceGoldenCase(
+        case_id="v1", audio_filename="whatever.oga", expected=(), expected_transcript_contains=()
+    )
+    client = FakeLlmClient(LlmError("boom", raw={"error": "boom"}))
+
+    score = await run_voice_case(client, "m", case, _TODAY, audio_dir=tmp_path)
+
+    assert not score.schema_ok
+    assert not score.transcript_ok
+    assert score.cost_usd is None
+
+
+def test_default_voice_cases_path_points_at_the_committed_voice_golden_set() -> None:
+    assert _DEFAULT_VOICE_CASES_PATH.name == "voice_v1.jsonl"
+    assert _DEFAULT_VOICE_CASES_PATH.exists()
