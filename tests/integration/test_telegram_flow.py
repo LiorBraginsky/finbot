@@ -21,7 +21,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from finbot.adapters.telegram.main import build_dispatcher
-from finbot.core.models import MessageKind
+from finbot.core.models import MessageKind, MessageStatus
 from finbot.repo.models import Message, User
 from tests.support.fake_session import FakeSession
 from tests.support.updates import (
@@ -70,6 +70,9 @@ async def test_update_is_persisted_exactly_once_on_redelivery(
     assert row.chat_id == CHAT_ID
     assert row.kind == MessageKind.TEXT
     assert row.raw_text == "bread 50"
+    # Plain text, not a command: the inbox lane owns it (ADR-0013) — the
+    # drain loop, not this handler, will claim and reply to it.
+    assert row.status == MessageStatus.PENDING
 
     # The byte-identical payload again — same dict, same update_id.
     await dispatcher.feed_raw_update(bot, update)
@@ -107,6 +110,21 @@ async def test_ping_replies_pong_and_is_persisted(
 
     row = (await db_session.execute(select(Message))).scalar_one()
     assert row.raw_text == "/ping"
+    # A command, never sent to the model: persisted per ADR-0006 for the
+    # provenance record, but the inbox lane must skip straight past it.
+    assert row.status == MessageStatus.SKIPPED
+
+
+async def test_day_command_is_persisted_as_skipped_never_pending(
+    dispatcher: Dispatcher, bot: Bot, db_session: AsyncSession
+) -> None:
+    update = text_update(update_id=3501, text="/day")
+
+    await dispatcher.feed_raw_update(bot, update)
+
+    row = (await db_session.execute(select(Message))).scalar_one()
+    assert row.raw_text == "/day"
+    assert row.status == MessageStatus.SKIPPED
 
 
 async def test_voice_message_stores_file_id(

@@ -59,6 +59,11 @@ ignore = ["S104"]
 # code that could hide a security issue, which does not apply to a private
 # bot's own category text in its own language.
 "src/finbot/core/categories/catalog.py" = ["RUF001"]
+# Every user-facing string the bot ever sends: Ukrainian prose and category
+# labels, same justification as the catalog above.
+"src/finbot/adapters/telegram/render.py" = ["RUF001"]
+# Asserts the exact Ukrainian/Cyrillic text render.py produces.
+"tests/unit/test_render.py" = ["RUF001"]
 
 [tool.mypy]
 python_version = "3.12"

@@ -4,9 +4,30 @@ Translates an aiogram ``Message`` into ``finbot.core.models.IncomingMessage``, o
 ``None`` when the message is nothing Stage 0 has a schema slot for.
 """
 
-from aiogram.types import Message
+from aiogram.types import Message, Update, User
 
 from finbot.core.models import IncomingMessage, MessageKind
+
+
+def sender_of(update: Update) -> User | None:
+    """Who this update is from, for the allowlist.
+
+    For a callback query this is `callback_query.from_user` — the person who
+    TAPPED. `callback_query.message.from_user` is the BOT that sent the
+    confirmation, and checking it would reject both household members: the
+    Stage-1 trap this function exists to close. Reads the `Update` directly
+    rather than `data["event_from_user"]`, keeping Stage 0's rule that
+    nothing depends on aiogram's internal middleware registration order.
+
+    `None` for an update with no message and no callback query, or a message
+    with no `from_user` (e.g. a channel post) — there is no one to check
+    against the allowlist.
+    """
+    if update.message is not None:
+        return update.message.from_user
+    if update.callback_query is not None:
+        return update.callback_query.from_user
+    return None
 
 
 def to_incoming(update_id: int, message: Message) -> IncomingMessage | None:
