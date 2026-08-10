@@ -32,7 +32,7 @@ day of guessing whether it was Docker, the network, Telegram, Postgres or the pr
 
 ---
 
-## ⬜ Stage 1 — MVP: text → expense
+## 🚧 Stage 1 — MVP: text → expense
 
 - Extraction from text with a fixed Pydantic schema, repair loop on invalid output
 - Fixed category list (~12), model must choose from it
@@ -42,6 +42,15 @@ day of guessing whether it was Docker, the network, Telegram, Postgres or the pr
 - ~10 hand-written eval cases and a throwaway runner, enough to pick a cheap model
 
 **Done when:** a week of recording expenses by text, without opening a spreadsheet.
+
+*Software complete: extraction, the thirteen categories, the confirmation/report flow, and
+the eleven-case golden set with a runner (`python -m evals.run`) are all built and covered
+by `pytest`. **One item remains, and it is the owner's:** running the evals against the
+five candidate models with a real OpenRouter key to choose `MODEL_TEXT` and
+`MODEL_FALLBACKS` — see `docs/plans/stage-1-text-to-expense.md` → Owner prerequisites and
+Decisions taken. Until that runs, `.env` has no model configured and the bot cannot
+extract anything. This stage's actual done-criterion — a week of real use — has not
+started either.*
 
 ---
 

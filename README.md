@@ -89,6 +89,26 @@ blocks merges at random or teaches people to re-run until it passes, and either 
 testcontainers' Ryuk sidecar rather than leaving its known startup race for someone to
 re-run past (see the comment there).
 
+### Evaluation
+
+`pytest` proves the plumbing. Given an exact recorded response body, the code parses it,
+keeps money as `Decimal`, writes the right rows and sends one confirmation — it never
+calls a model, costs nothing, and is deterministic, which is why it can be a gate on a
+branch that merges itself.
+
+`evals/` measures the model. It calls real models, costs real money, and its results vary
+between runs. It is not part of `pytest` and is not a gate before Stage 3. Extraction
+*correctness* — did the model get the right amount, category, date — is never asserted in
+`pytest`: doing so there would either need a network call in the gate or freeze one
+model's output as "the truth", and either one destroys the gate's meaning.
+
+```bash
+python -m evals.run --models mistralai/mistral-nemo,openai/gpt-oss-20b
+```
+
+See [`evals/README.md`](evals/README.md) for the case format, the metrics, and the full
+runner reference.
+
 ### Running the stack
 
 ```bash

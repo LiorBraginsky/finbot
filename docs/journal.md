@@ -34,6 +34,15 @@ of date.
 
 ---
 
+## 2026-08-10 · stage 1 · worker
+**Did:** Stage 1 end to end — money/category rules, versioned prompt and an OpenRouter client with a repair loop, inbox delivery with working inline buttons and SQL reports, and now the eleven-case golden set plus a runner (`python -m evals.run`) scoring five candidate models through that same production code path. Test count 163 -> 197.
+**Hit:** `qwen/qwen3.7-flash`, the cheapest candidate, was dropped after the live catalogue showed no `structured_outputs` support — `provider.require_parameters: true` would have left it zero eligible routes; separately, `aiohttp` raises the builtin `TimeoutError`, not a `ClientError` subclass, on total-timeout expiry.
+**Next:** the owner runs the evals against the five candidates with a real OpenRouter key, chooses `MODEL_TEXT`/`MODEL_FALLBACKS`, and Stage 1 closes.
+**Open:** whether the cheapest model clearing the `schema_ok` gate also holds `amount_exact`/`count_exact`, or the 116x-pricier control model earns its keep — that comparison is the eval run itself, still to be run.
+
+## Learning notes
+`core.money.loads_decimal`'s `parse_float=Decimal` is the entire distance between CLAUDE.md rule 2 and a float silently entering the ledger: plain `json.loads` parses `50.89` through the C float parser before `Decimal` ever sees it, so the guard has to intercept the JSON text itself, not the Python value that comes out of it. The JSON Schema sent to OpenRouter is hand-derived rather than taken from `ExpenseDraft.model_json_schema()`, because Pydantic's emitter produces `$defs`/`$ref` for nested models, omits `additionalProperties: false`, and types `Decimal` as `anyOf[number, string]` — none of which strict structured-output mode accepts — so the derivation is tested recursively rather than trusted. `provider.require_parameters: true` matters because structured-output support is a property of the *endpoint* actually serving a model, not of the model itself; without it, a request can silently route to a provider that ignores `response_format` and returns prose, which reads downstream as a bad model rather than bad routing. The processing round's ack is withheld only at the durable write in `messages`/`expenses` — never in a handler, never on an earlier step — because that write is the one point whose failure must make Telegram redeliver; acking anything upstream of it would let a crash between "read" and "write" lose the message for good.
+
 ## 2026-08-09 · stage 0 · lior
 **Did:** deployed to a Hetzner CX23 in Frankfurt and verified in production — `/ping` answered, five messages from two whitelisted senders persisted, `count(*) == count(distinct telegram_update_id)`; daily `pg_dump` on cron. Stage 0 closed.
 **Hit:** Telegram's privacy-mode change does not apply to groups the bot has already joined — the bot must be removed and re-added, otherwise `getUpdates` stays empty and looks like a token problem
