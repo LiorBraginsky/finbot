@@ -14,14 +14,21 @@ from finbot.repo.models import Message
 
 
 def _initial_status(message: IncomingMessage) -> MessageStatus:
-    """Commands and non-text content never reach extraction — this is where
-    the Stage-0 plan's "filtering commands out of extraction is Stage 1's
-    job" lands. Everything else is a PENDING row the drain loop will claim.
+    """Commands never reach extraction — this is where the Stage-0 plan's
+    "filtering commands out of extraction is Stage 1's job" lands. Plain
+    text and, from Stage 2, voice are both PENDING rows the drain loop will
+    claim; photos stay SKIPPED until Stage 4 gives them a pipeline of their
+    own. `core.extraction.pipeline` is what refuses an unconfigured or
+    too-long voice note — as a PENDING row it still goes through the drain
+    loop, exactly like the foreign-currency guard does for text, rather than
+    being turned away here where there is no way to reply.
     """
-    is_plain_text = message.kind == MessageKind.TEXT and not (message.raw_text or "").startswith(
-        "/"
-    )
-    return MessageStatus.PENDING if is_plain_text else MessageStatus.SKIPPED
+    if message.kind == MessageKind.TEXT:
+        is_plain_text = not (message.raw_text or "").startswith("/")
+        return MessageStatus.PENDING if is_plain_text else MessageStatus.SKIPPED
+    if message.kind == MessageKind.VOICE:
+        return MessageStatus.PENDING
+    return MessageStatus.SKIPPED
 
 
 async def add_if_new(session: AsyncSession, message: IncomingMessage, user_id: int) -> int | None:
@@ -40,6 +47,7 @@ async def add_if_new(session: AsyncSession, message: IncomingMessage, user_id: i
             kind=message.kind,
             raw_text=message.raw_text,
             file_id=message.file_id,
+            duration_seconds=message.duration_seconds,
             status=_initial_status(message),
         )
         .on_conflict_do_nothing(index_elements=[Message.telegram_update_id])
@@ -77,6 +85,20 @@ async def claim_next(session: AsyncSession, now: datetime) -> Message | None:
 async def mark_done(session: AsyncSession, message_id: int) -> None:
     await session.execute(
         update(Message).where(Message.id == message_id).values(status=MessageStatus.DONE)
+    )
+
+
+async def set_transcript(session: AsyncSession, message_id: int, transcript: str) -> None:
+    """Stores a voice message's transcript into `raw_text` — the same column
+    a text message's own words already live in (docs/roadmap.md Stage 2's
+    decision 3), which is what makes a voice message searchable and what
+    Stage 3's evals eventually read as production input. Called as soon as
+    a voice extraction round parses successfully, before the currency guard
+    or expense creation run, so the transcript survives even when neither
+    of those does.
+    """
+    await session.execute(
+        update(Message).where(Message.id == message_id).values(raw_text=transcript)
     )
 
 

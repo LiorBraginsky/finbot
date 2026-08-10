@@ -45,6 +45,16 @@ def test_voice_message_maps_to_voice_kind_with_file_id_and_caption() -> None:
     assert incoming.kind == MessageKind.VOICE
     assert incoming.file_id == "voice-file-id"
     assert incoming.raw_text == "groceries"
+    assert incoming.duration_seconds == 3
+
+
+def test_text_message_has_no_duration_seconds() -> None:
+    message = _message(text="bread 50")
+
+    incoming = to_incoming(update_id=1007, message=message)
+
+    assert incoming is not None
+    assert incoming.duration_seconds is None
 
 
 def test_photo_message_maps_to_photo_kind_using_largest_rendition() -> None:

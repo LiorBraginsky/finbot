@@ -48,3 +48,9 @@ class IncomingMessage(BaseModel):
     kind: MessageKind
     raw_text: str | None = None
     file_id: str | None = None
+    # Voice only (`message.voice.duration`, seconds, from Telegram itself —
+    # no download needed to know it). Persisted so
+    # `core.extraction.pipeline` can refuse a too-long note *before* any
+    # download, once the message is claimed from the inbox and the original
+    # aiogram `Message` is long gone (docs/roadmap.md Stage 2, spec §7).
+    duration_seconds: int | None = None

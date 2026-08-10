@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     openrouter_api_key: SecretStr
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     model_text: str
+    # Unset by default, deliberately: docs/roadmap.md Stage 2 requires the
+    # bot to run with voice unconfigured rather than fail at startup — the
+    # owner sets this only after running the voice eval. An empty string is
+    # what "unset" looks like once `voice_model_candidates` below resolves
+    # it, exactly like `model_fallbacks`.
+    model_voice: str = ""
     # str, not list[str]: pydantic-settings JSON-decodes any complex-typed
     # field straight from the environment, so a list[str] field would fail
     # to parse "a,b" before any validator of ours ever ran. Comma-splitting
@@ -31,6 +37,9 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 60
     max_extraction_attempts: int = 2
     max_message_attempts: int = 5
+    # Voice notes longer than this are refused before any download
+    # (docs/roadmap.md Stage 2, spec §7).
+    max_voice_seconds: int = 120
 
     @property
     def allowed_user_ids(self) -> frozenset[int]:
@@ -43,6 +52,20 @@ class Settings(BaseSettings):
         """
         fallbacks = [part.strip() for part in self.model_fallbacks.split(",") if part.strip()]
         return (self.model_text, *fallbacks)
+
+    @property
+    def voice_model_candidates(self) -> tuple[str, ...]:
+        """Empty when `model_voice` is unset — `core.extraction.pipeline`
+        reads an empty tuple as "voice is not configured yet" and neither
+        downloads nor calls anything (docs/roadmap.md Stage 2), the same way
+        `model_candidates` never has to special-case `model_text` being
+        required: the difference here is that voice is allowed to be unset
+        at all.
+        """
+        if not self.model_voice.strip():
+            return ()
+        fallbacks = [part.strip() for part in self.model_fallbacks.split(",") if part.strip()]
+        return (self.model_voice, *fallbacks)
 
     @property
     def tz(self) -> ZoneInfo:
@@ -69,7 +92,13 @@ class Settings(BaseSettings):
         # rate-limited (see docs/plans/stage-1-text-to-expense.md's Reality
         # check) — failing at startup beats discovering it from a 429 at
         # 2 a.m. or, worse, silently training a provider on household data.
-        free_ids = [candidate for candidate in self.model_candidates if candidate.endswith(":free")]
+        # voice_model_candidates too: an unset MODEL_VOICE is fine (it's an
+        # empty tuple), but a configured one is held to the same ban.
+        free_ids = [
+            candidate
+            for candidate in (*self.model_candidates, *self.voice_model_candidates)
+            if candidate.endswith(":free")
+        ]
         if free_ids:
             raise ValueError(f"model id(s) {free_ids} end in ':free', which this project bans")
         return self

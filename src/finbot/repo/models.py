@@ -63,6 +63,9 @@ class Message(Base):
     )
     raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     file_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Voice only — see core.models.IncomingMessage.duration_seconds for why
+    # this is captured at receipt time rather than re-derived later.
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[MessageStatus] = mapped_column(
         Enum(
             MessageStatus,
