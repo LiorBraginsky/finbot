@@ -118,6 +118,20 @@ def test_transcript_line_wraps_in_microphone_and_guillemets() -> None:
     assert transcript_line("хліб пʼятдесят") == "🎤 «хліб пʼятдесят»"
 
 
+def test_transcript_line_leaves_a_short_transcript_untouched() -> None:
+    short = "х" * 500
+    assert transcript_line(short) == f"🎤 «{short}»"
+
+
+def test_transcript_line_truncates_a_long_transcript_with_an_ellipsis() -> None:
+    long_transcript = "х" * 600
+
+    rendered = transcript_line(long_transcript)
+
+    assert rendered == f"🎤 «{'х' * 500}…»"
+    assert len(rendered) < len(f"🎤 «{long_transcript}»")
+
+
 def test_render_confirmation_shows_the_transcript_above_a_single_expense() -> None:
     lines = [
         ConfirmationLine(

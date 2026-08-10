@@ -136,13 +136,33 @@ def _row_text(line: ConfirmationLine, *, today: date) -> str:
     return f"{line.index}. {emoji} {line.item} — {_amount_text(line.amount)} ₴{suffix}"
 
 
+_TRANSCRIPT_MAX_LENGTH = 500
+
+
 def transcript_line(transcript: str) -> str:
     """The 🎤 «...» line a voice confirmation shows above the numbered list
     (docs/roadmap.md Stage 2) — also reused for the zero-expenses
     clarification (`runner.py`), so a household member always sees what the
     bot heard, not only what it managed to extract from it.
+
+    Truncated to `_TRANSCRIPT_MAX_LENGTH` characters, with a trailing "…" —
+    the same truncate-don't-reject choice `core.extraction.schema.
+    ExpenseDraft._clean_item` makes for an over-long item, applied here
+    because Telegram's own 4096-character message limit is real: an
+    unbounded transcript plus a numbered list of several expenses could
+    exceed it, `bot.send_message` would then raise, and — because
+    `extract_and_store` already committed the expenses before this ever
+    runs (write, then reply, ADR-0007) — the household would see no
+    confirmation at all for expenses that were, in fact, recorded.
+    `messages.raw_text` keeps the untruncated transcript regardless; only
+    what is shown here is shortened.
     """
-    return f"🎤 «{transcript}»"
+    shown = (
+        transcript
+        if len(transcript) <= _TRANSCRIPT_MAX_LENGTH
+        else f"{transcript[:_TRANSCRIPT_MAX_LENGTH]}…"
+    )
+    return f"🎤 «{shown}»"
 
 
 def render_confirmation(
