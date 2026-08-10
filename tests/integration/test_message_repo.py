@@ -108,8 +108,29 @@ async def test_add_if_new_sets_skipped_for_a_command(db_session: AsyncSession) -
     assert row.status == MessageStatus.SKIPPED
 
 
-async def test_add_if_new_sets_skipped_for_non_text_content(db_session: AsyncSession) -> None:
-    message = _message(kind=MessageKind.VOICE, raw_text=None, file_id="voice-file-id")
+async def test_add_if_new_sets_pending_for_voice(db_session: AsyncSession) -> None:
+    """From Stage 2 (docs/roadmap.md): voice becomes a PENDING row exactly
+    like plain text, so the drain loop claims and processes it — unlike
+    Stage 0/1, where voice and photo were both SKIPPED.
+    """
+    message = _message(
+        kind=MessageKind.VOICE, raw_text=None, file_id="voice-file-id", duration_seconds=5
+    )
+    user_id = await users.get_or_create(db_session, message.telegram_user_id, message.display_name)
+
+    row_id = await messages.add_if_new(db_session, message, user_id)
+    await db_session.commit()
+    assert row_id is not None
+
+    row = await db_session.get(Message, row_id)
+    assert row is not None
+    assert row.status == MessageStatus.PENDING
+    assert row.duration_seconds == 5
+
+
+async def test_add_if_new_sets_skipped_for_a_photo(db_session: AsyncSession) -> None:
+    """Photo stays SKIPPED until Stage 4 gives it a pipeline of its own."""
+    message = _message(kind=MessageKind.PHOTO, raw_text=None, file_id="photo-file-id")
     user_id = await users.get_or_create(db_session, message.telegram_user_id, message.display_name)
 
     row_id = await messages.add_if_new(db_session, message, user_id)
@@ -176,6 +197,29 @@ async def test_mark_done_sets_status_done(db_session: AsyncSession) -> None:
     row = await db_session.get(Message, row_id)
     assert row is not None
     assert row.status == MessageStatus.DONE
+
+
+async def test_set_transcript_writes_into_raw_text(db_session: AsyncSession) -> None:
+    """Stage 2 (docs/roadmap.md): a voice message's transcript lands in the
+    same column a text message's own words already occupy — what makes a
+    voice message searchable and, eventually, Stage 3's production eval
+    input.
+    """
+    message = _message(
+        kind=MessageKind.VOICE, raw_text=None, file_id="voice-file-id", duration_seconds=5
+    )
+    user_id = await users.get_or_create(db_session, message.telegram_user_id, message.display_name)
+    row_id = await messages.add_if_new(db_session, message, user_id)
+    await db_session.commit()
+    assert row_id is not None
+
+    await messages.set_transcript(db_session, row_id, "хліб пʼятдесят")
+    await db_session.commit()
+    db_session.expire_all()
+
+    row = await db_session.get(Message, row_id)
+    assert row is not None
+    assert row.raw_text == "хліб пʼятдесят"
 
 
 async def test_mark_skipped_sets_status_skipped(db_session: AsyncSession) -> None:

@@ -84,9 +84,10 @@ many cases failed; a percentage hides it.
 python -m evals.run --models mistralai/mistral-nemo,openai/gpt-oss-20b,google/gemini-3.6-flash
 ```
 
-Also: `--cases PATH` (default `evals/golden/text_v1.jsonl`), `--repeats N` (default 1),
-`--save-raw DIR` (writes every raw response body to `DIR`, for refreshing
-`tests/fixtures/openrouter/`), `--today YYYY-MM-DD` (overrides the date
+Also: `--modality text|voice` (default `text`), `--cases PATH` (default
+`evals/golden/text_v1.jsonl`, or `evals/golden/voice_v1.jsonl` under `--modality voice`),
+`--repeats N` (default 1), `--save-raw DIR` (writes every raw response body to `DIR`, for
+refreshing `tests/fixtures/openrouter/`), `--today YYYY-MM-DD` (overrides the date
 `occurred_offset_days` resolves against; default: today in `Europe/Kyiv`).
 
 Requires `OPENROUTER_API_KEY` — in `.env` or exported — and fails fast with a clear
@@ -94,3 +95,29 @@ message if it is absent, rather than reaching OpenRouter and hanging on a 401.
 
 Any change to a prompt or a model is compared before and after, with both results
 recorded in `docs/journal.md`.
+
+## Voice (docs/roadmap.md Stage 2)
+
+```bash
+python -m evals.run --modality voice --models google/gemini-2.5-flash
+```
+
+Same production code path, one layer over: `finbot.core.extraction.voice` builds the
+request and parses the response, `finbot.llm.openrouter` performs the call — no repair
+loop here either, for the same reason.
+
+`evals/golden/voice_v1.jsonl` adds two things to the text case shape: `audio` (a filename
+under `evals/golden/voice/`, read relative to `--audio-dir`, default that same directory)
+and `expected_transcript_contains` — a list of substrings that must all appear in the
+model's own `transcript`, case-insensitively. It is a cheap deterministic proxy for "did
+it hear the words" that needs no judge model (never call a judge where an exact check
+exists, ADR-0014 §7).
+
+**The audio files themselves are not in this repository.** `evals/golden/voice/` is
+git-ignored except for its own `README.md`, which explains how to produce them — they are
+the owner's own recordings, and ADR-0009 keeps household audio out of a public repo.
+Running this modality on a fresh clone fails on a missing file until some are recorded.
+
+`transcript_ok` sits alongside the four exact metrics in the printed table; everything
+else — raw counts, never percentages, `mean cost`/`p50`/`p95` — is identical to the text
+table.

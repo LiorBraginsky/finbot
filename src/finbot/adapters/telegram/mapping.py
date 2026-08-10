@@ -44,11 +44,13 @@ def to_incoming(update_id: int, message: Message) -> IncomingMessage | None:
     kind: MessageKind
     raw_text: str | None
     file_id: str | None
+    duration_seconds: int | None = None
 
     if message.voice is not None:
         kind = MessageKind.VOICE
         file_id = message.voice.file_id
         raw_text = message.caption
+        duration_seconds = message.voice.duration
     elif message.photo is not None:
         kind = MessageKind.PHOTO
         file_id = message.photo[-1].file_id
@@ -69,4 +71,5 @@ def to_incoming(update_id: int, message: Message) -> IncomingMessage | None:
         kind=kind,
         raw_text=raw_text,
         file_id=file_id,
+        duration_seconds=duration_seconds,
     )

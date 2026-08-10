@@ -20,6 +20,7 @@ from finbot.core.categories.catalog import CategorySpec
 
 _DIR = Path(__file__).parent
 PROMPT_VERSION_TEXT: Final[str] = "extract_text.v1"
+PROMPT_VERSION_VOICE: Final[str] = "extract_voice.v1"
 
 
 def load(version: str) -> str:
@@ -34,6 +35,17 @@ def load(version: str) -> str:
 def render_text_prompt(*, today: date, catalog: Sequence[CategorySpec]) -> str:
     """Render `extract_text.v1.md` with today's date and the category list."""
     return Template(load(PROMPT_VERSION_TEXT)).substitute(
+        today=today.isoformat(),
+        weekday=today.strftime("%A"),
+        categories="\n".join(f"- {c.slug} {c.emoji} — {c.description}" for c in catalog),
+    )
+
+
+def render_voice_prompt(*, today: date, catalog: Sequence[CategorySpec]) -> str:
+    """Render `extract_voice.v1.md` with today's date and the category list —
+    mirrors `render_text_prompt` exactly (docs/roadmap.md Stage 2).
+    """
+    return Template(load(PROMPT_VERSION_VOICE)).substitute(
         today=today.isoformat(),
         weekday=today.strftime("%A"),
         categories="\n".join(f"- {c.slug} {c.emoji} — {c.description}" for c in catalog),

@@ -3,7 +3,11 @@
 Persistence for plain text already happened in middleware by the time these
 run — see `middlewares.py`. Plain expense text has **no handler here**: the
 inbox middleware persists it and `runner.py`'s drain loop replies; aiogram
-logging it "not handled" at this layer is correct and expected.
+logging it "not handled" at this layer is correct and expected. Voice is the
+same, from Stage 2 (docs/roadmap.md): a voice message becomes a PENDING row
+just like text, and the drain loop is what eventually replies — see
+`repo.messages._initial_status` and `core.extraction.pipeline`. Only photo
+still gets an inline `unsupported_modality` reply below, until Stage 4.
 
 Everything registered here answers **inline**: fast, no LLM, no `messages`
 row. A tap on ✏️/🗑/a category button is not written to `messages` — that
@@ -161,7 +165,7 @@ def build_router(tz: ZoneInfo) -> Router:
     async def help_command(message: Message) -> None:
         await message.answer(HELP_TEXT)
 
-    @router.message(F.voice | F.photo)
+    @router.message(F.photo)
     async def unsupported_modality(message: Message) -> None:
         await message.answer(UNSUPPORTED_MODALITY_REPLY)
 

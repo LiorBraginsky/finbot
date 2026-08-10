@@ -6,6 +6,7 @@ Requires a real Postgres (see tests/conftest.py). No skipif on Docker
 availability.
 """
 
+import base64
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -17,8 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from finbot.core.categories.catalog import CATALOG
 from finbot.core.extraction.currency import FOREIGN_CURRENCY_ERROR
-from finbot.core.extraction.pipeline import NO_RESPONSE_MODEL_ID, extract_and_store
-from finbot.core.extraction.ports import LlmError, LlmRequest, LlmResponse
+from finbot.core.extraction.pipeline import (
+    NO_RESPONSE_MODEL_ID,
+    VOICE_NOT_CONFIGURED_ERROR,
+    VOICE_TOO_LONG_ERROR,
+    extract_and_store,
+)
+from finbot.core.extraction.ports import AudioFetchError, LlmError, LlmRequest, LlmResponse
 from finbot.core.models import ExtractionStatus, IncomingMessage, MessageKind, MessageStatus
 from finbot.repo import categories, messages, users
 from finbot.repo.models import Expense, Extraction, Message
@@ -27,6 +33,7 @@ from tests.support.fake_llm import FakeLlmClient
 _FIXTURES_DIR = Path(__file__).parents[1] / "fixtures" / "openrouter"
 _TODAY = datetime(2026, 8, 10, tzinfo=UTC).date()
 _MODELS = ("openai/gpt-5.6-luna", "qwen/qwen3.7-flash")
+_VOICE_MODELS = ("google/gemini-2.5-flash",)
 
 
 def _load_fixture(name: str) -> str:
@@ -77,6 +84,44 @@ async def _claimed_message(session: AsyncSession, raw_text: str) -> Message:
     return claimed
 
 
+async def _claimed_voice_message(
+    session: AsyncSession, *, duration_seconds: int = 5, file_id: str = "voice-file-id"
+) -> Message:
+    """Mirrors `_claimed_message`, for a voice update instead of a text one —
+    `raw_text` starts `None` (no caption), and `duration_seconds` is what
+    `core.extraction.pipeline`'s too-long guard reads.
+    """
+    incoming = IncomingMessage(
+        telegram_update_id=hash((file_id, duration_seconds)) & 0x7FFFFFFF,
+        telegram_message_id=1,
+        chat_id=-1001111111111,
+        telegram_user_id=444444444,
+        display_name="Alice",
+        kind=MessageKind.VOICE,
+        raw_text=None,
+        file_id=file_id,
+        duration_seconds=duration_seconds,
+    )
+    user_id = await users.get_or_create(session, incoming.telegram_user_id, incoming.display_name)
+    message_id = await messages.add_if_new(session, incoming, user_id)
+    await session.commit()
+    assert message_id is not None
+
+    claimed = await messages.claim_next(session, datetime.now(UTC))
+    await session.commit()
+    assert claimed is not None
+    return claimed
+
+
+async def _never_fetch() -> bytes:
+    """Never actually called: passed where a test must prove no download was
+    even attempted, mirroring `FakeLlmClient()`'s own "raise if called at
+    all" contract (see `test_foreign_currency_message_skips_before_any_model_
+    call`'s docstring) for the fetch-audio seam instead of the model one.
+    """
+    raise AssertionError("fetch_audio was called, but this guard must fire before any download")
+
+
 async def _category_ids(session: AsyncSession) -> dict[str, int]:
     """Mirrors `runner.py::_process_claimed`'s own sequence: a read commits
     too, so nothing is left open on `session` when the caller goes on to
@@ -125,6 +170,8 @@ async def test_two_items_produce_two_expenses_and_one_ok_extraction(
         models=_MODELS,
         max_attempts=2,
         max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_audio=None,
     )
 
     assert outcome.status == ExtractionStatus.OK
@@ -166,6 +213,8 @@ async def test_invalid_json_then_ok_repairs_within_one_round(db_session: AsyncSe
         models=_MODELS,
         max_attempts=2,
         max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_audio=None,
     )
 
     assert outcome.status == ExtractionStatus.OK
@@ -202,6 +251,8 @@ async def test_two_consecutive_invalid_json_schedules_a_retry(db_session: AsyncS
         models=_MODELS,
         max_attempts=2,
         max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_audio=None,
     )
 
     assert outcome.status == ExtractionStatus.INVALID_JSON
@@ -241,6 +292,8 @@ async def test_llm_error_records_a_failed_row_with_no_cost(db_session: AsyncSess
         models=_MODELS,
         max_attempts=2,
         max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_audio=None,
     )
 
     assert outcome.status == ExtractionStatus.FAILED
@@ -310,6 +363,8 @@ async def test_a_malformed_200_records_a_failed_row_with_the_cost_it_can_prove(
         models=_MODELS,
         max_attempts=2,
         max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_audio=None,
     )
 
     assert outcome.status == ExtractionStatus.FAILED
@@ -344,6 +399,8 @@ async def test_no_cost_fixture_still_writes_expenses_with_null_cost(
         models=_MODELS,
         max_attempts=2,
         max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_audio=None,
     )
 
     assert outcome.status == ExtractionStatus.OK
@@ -371,6 +428,8 @@ async def test_ok_empty_asks_for_clarification_and_still_marks_done(
         models=_MODELS,
         max_attempts=2,
         max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_audio=None,
     )
 
     assert outcome.status == ExtractionStatus.OK
@@ -410,6 +469,8 @@ async def test_occurred_at_null_resolves_to_today(db_session: AsyncSession) -> N
         models=_MODELS,
         max_attempts=2,
         max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_audio=None,
     )
 
     expense_rows = (await db_session.execute(select(Expense))).scalars().all()
@@ -445,6 +506,8 @@ async def test_occurred_at_in_the_future_clamps_to_today(db_session: AsyncSessio
         models=_MODELS,
         max_attempts=2,
         max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_audio=None,
     )
 
     expense_rows = (await db_session.execute(select(Expense))).scalars().all()
@@ -473,6 +536,8 @@ async def test_llm_call_does_not_run_inside_an_open_transaction(db_session: Asyn
         models=_MODELS,
         max_attempts=2,
         max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_audio=None,
     )
 
     assert llm.was_in_transaction is False
@@ -501,6 +566,8 @@ async def test_foreign_currency_message_skips_before_any_model_call(
         models=_MODELS,
         max_attempts=2,
         max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_audio=None,
     )
 
     assert outcome.foreign_currency is True
@@ -514,3 +581,322 @@ async def test_foreign_currency_message_skips_before_any_model_call(
     assert refreshed is not None
     assert refreshed.status == MessageStatus.SKIPPED
     assert refreshed.last_error == FOREIGN_CURRENCY_ERROR
+
+
+# --- voice (docs/roadmap.md Stage 2) ------------------------------------------
+
+
+async def test_voice_not_configured_marks_skipped_before_any_download_or_model_call(
+    db_session: AsyncSession,
+) -> None:
+    """An empty `models` tuple is what `Settings.voice_model_candidates`
+    resolves to when `MODEL_VOICE` is unset — `_never_fetch` proves no
+    download is attempted, and `FakeLlmClient()` (no scripted responses)
+    would raise `AssertionError` the instant it was ever called.
+    """
+    message = await _claimed_voice_message(db_session)
+    message_id = message.id
+    category_ids = await _category_ids(db_session)
+    llm = FakeLlmClient()
+
+    outcome = await extract_and_store(
+        session=db_session,
+        message=message,
+        llm=llm,
+        catalog=CATALOG,
+        category_ids=category_ids,
+        today=_TODAY,
+        models=(),
+        max_attempts=2,
+        max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_audio=_never_fetch,
+    )
+
+    assert outcome.voice_not_configured is True
+    assert outcome.expense_ids == ()
+
+    assert (await db_session.execute(select(Extraction))).scalars().all() == []
+    assert (await db_session.execute(select(Expense))).scalars().all() == []
+
+    db_session.expire_all()
+    refreshed = await db_session.get(Message, message_id)
+    assert refreshed is not None
+    assert refreshed.status == MessageStatus.SKIPPED
+    assert refreshed.last_error == VOICE_NOT_CONFIGURED_ERROR
+
+
+async def test_voice_over_the_duration_limit_refuses_before_any_download(
+    db_session: AsyncSession,
+) -> None:
+    message = await _claimed_voice_message(db_session, duration_seconds=180)
+    message_id = message.id
+    category_ids = await _category_ids(db_session)
+    llm = FakeLlmClient()
+
+    outcome = await extract_and_store(
+        session=db_session,
+        message=message,
+        llm=llm,
+        catalog=CATALOG,
+        category_ids=category_ids,
+        today=_TODAY,
+        models=_VOICE_MODELS,
+        max_attempts=2,
+        max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_audio=_never_fetch,
+    )
+
+    assert outcome.voice_too_long is True
+
+    assert (await db_session.execute(select(Extraction))).scalars().all() == []
+
+    db_session.expire_all()
+    refreshed = await db_session.get(Message, message_id)
+    assert refreshed is not None
+    assert refreshed.status == MessageStatus.SKIPPED
+    assert refreshed.last_error == VOICE_TOO_LONG_ERROR
+
+
+async def test_voice_fetch_audio_failure_schedules_retry_with_no_extractions_row(
+    db_session: AsyncSession,
+) -> None:
+    """A download or `ffmpeg` failure (`AudioFetchError`) happens before any
+    model call — unlike an `LlmError`, there is no response to record, so no
+    `extractions` row exists, and the message goes back to `pending` rather
+    than `failed` (one attempt, well under `max_message_attempts`).
+    """
+    message = await _claimed_voice_message(db_session)
+    message_id = message.id
+    category_ids = await _category_ids(db_session)
+    llm = FakeLlmClient()
+
+    async def _boom() -> bytes:
+        raise AudioFetchError("ffmpeg exited 1: boom")
+
+    outcome = await extract_and_store(
+        session=db_session,
+        message=message,
+        llm=llm,
+        catalog=CATALOG,
+        category_ids=category_ids,
+        today=_TODAY,
+        models=_VOICE_MODELS,
+        max_attempts=2,
+        max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_audio=_boom,
+    )
+
+    assert outcome.status == ExtractionStatus.FAILED
+    assert outcome.voice_not_configured is False
+    assert outcome.voice_too_long is False
+
+    assert (await db_session.execute(select(Extraction))).scalars().all() == []
+
+    db_session.expire_all()
+    refreshed = await db_session.get(Message, message_id)
+    assert refreshed is not None
+    assert refreshed.status == MessageStatus.PENDING
+    assert refreshed.last_error == "ffmpeg exited 1: boom"
+
+
+async def _fetch_ok() -> bytes:
+    return b"fake-mp3-bytes"
+
+
+async def test_voice_happy_path_records_transcript_and_two_expenses(
+    db_session: AsyncSession,
+) -> None:
+    message = await _claimed_voice_message(db_session)
+    message_id = message.id
+    category_ids = await _category_ids(db_session)
+    llm = FakeLlmClient(_load_fixture("ok_voice_two_items"))
+
+    outcome = await extract_and_store(
+        session=db_session,
+        message=message,
+        llm=llm,
+        catalog=CATALOG,
+        category_ids=category_ids,
+        today=_TODAY,
+        models=_VOICE_MODELS,
+        max_attempts=2,
+        max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_audio=_fetch_ok,
+    )
+
+    assert outcome.status == ExtractionStatus.OK
+    assert outcome.transcript == "хліб пʼятдесят і таксі двісті"
+    assert len(outcome.expense_ids) == 2
+
+    # The audio actually sent is base64 of what fetch_audio returned.
+    sent_content = llm.requests[0].messages[-1]["content"]
+    assert sent_content[0]["type"] == "input_audio"
+    assert sent_content[0]["input_audio"]["format"] == "mp3"
+    assert sent_content[0]["input_audio"]["data"] == base64.b64encode(b"fake-mp3-bytes").decode(
+        "ascii"
+    )
+
+    extraction_rows = (await db_session.execute(select(Extraction))).scalars().all()
+    assert len(extraction_rows) == 1
+    assert extraction_rows[0].status == ExtractionStatus.OK
+
+    db_session.expire_all()
+    refreshed = await db_session.get(Message, message_id)
+    assert refreshed is not None
+    assert refreshed.status == MessageStatus.DONE
+    assert refreshed.raw_text == "хліб пʼятдесят і таксі двісті"
+
+
+async def test_voice_invalid_json_then_ok_repairs_within_one_round(
+    db_session: AsyncSession,
+) -> None:
+    """The repair loop is the exact same one text uses (core.extraction.
+    pipeline._run_extraction_round) — this is the voice-side proof.
+    """
+    message = await _claimed_voice_message(db_session)
+    category_ids = await _category_ids(db_session)
+    llm = FakeLlmClient(_load_fixture("invalid_json"), _load_fixture("ok_voice_two_items"))
+
+    outcome = await extract_and_store(
+        session=db_session,
+        message=message,
+        llm=llm,
+        catalog=CATALOG,
+        category_ids=category_ids,
+        today=_TODAY,
+        models=_VOICE_MODELS,
+        max_attempts=2,
+        max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_audio=_fetch_ok,
+    )
+
+    assert outcome.status == ExtractionStatus.OK
+
+    extraction_rows = (
+        (await db_session.execute(select(Extraction).order_by(Extraction.attempt))).scalars().all()
+    )
+    assert [row.attempt for row in extraction_rows] == [1, 2]
+    assert [row.status for row in extraction_rows] == [
+        ExtractionStatus.INVALID_JSON,
+        ExtractionStatus.OK,
+    ]
+
+
+async def test_voice_zero_expenses_still_records_transcript_and_asks_for_clarification(
+    db_session: AsyncSession,
+) -> None:
+    message = await _claimed_voice_message(db_session)
+    message_id = message.id
+    category_ids = await _category_ids(db_session)
+    llm = FakeLlmClient(_load_fixture("ok_voice_empty"))
+
+    outcome = await extract_and_store(
+        session=db_session,
+        message=message,
+        llm=llm,
+        catalog=CATALOG,
+        category_ids=category_ids,
+        today=_TODAY,
+        models=_VOICE_MODELS,
+        max_attempts=2,
+        max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_audio=_fetch_ok,
+    )
+
+    assert outcome.status == ExtractionStatus.OK
+    assert outcome.expense_ids == ()
+    assert outcome.asked_for_clarification is True
+    assert outcome.transcript == "та я просто наговорюю нотатку"
+
+    db_session.expire_all()
+    refreshed = await db_session.get(Message, message_id)
+    assert refreshed is not None
+    assert refreshed.status == MessageStatus.DONE
+    assert refreshed.raw_text == "та я просто наговорюю нотатку"
+
+
+async def test_voice_transcript_trips_currency_guard_after_a_billed_call(
+    db_session: AsyncSession,
+) -> None:
+    """Unlike text's guard, this one runs *after* extraction — the call
+    already happened and is recorded (`extractions` row, status OK), but no
+    `expenses` are written and the message is skipped exactly like text's
+    guard leaves it, so a future currency-aware pass can find it.
+    """
+    message = await _claimed_voice_message(db_session)
+    message_id = message.id
+    category_ids = await _category_ids(db_session)
+    llm = FakeLlmClient(_load_fixture("ok_voice_foreign_currency"))
+
+    outcome = await extract_and_store(
+        session=db_session,
+        message=message,
+        llm=llm,
+        catalog=CATALOG,
+        category_ids=category_ids,
+        today=_TODAY,
+        models=_VOICE_MODELS,
+        max_attempts=2,
+        max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_audio=_fetch_ok,
+    )
+
+    assert outcome.foreign_currency is True
+    assert outcome.expense_ids == ()
+    assert outcome.transcript == "кава десять доларів"
+
+    extraction_rows = (await db_session.execute(select(Extraction))).scalars().all()
+    assert len(extraction_rows) == 1
+    assert extraction_rows[0].status == ExtractionStatus.OK
+
+    assert (await db_session.execute(select(Expense))).scalars().all() == []
+
+    db_session.expire_all()
+    refreshed = await db_session.get(Message, message_id)
+    assert refreshed is not None
+    assert refreshed.status == MessageStatus.SKIPPED
+    assert refreshed.last_error == FOREIGN_CURRENCY_ERROR
+    assert refreshed.raw_text == "кава десять доларів"
+
+
+async def test_voice_llm_error_records_a_failed_row_with_no_cost(db_session: AsyncSession) -> None:
+    message = await _claimed_voice_message(db_session)
+    message_id = message.id
+    category_ids = await _category_ids(db_session)
+    transport_error = LlmError(
+        "boom: connection reset", raw={"error": "boom", "type": "ClientError", "status": None}
+    )
+    llm = FakeLlmClient(transport_error)
+
+    outcome = await extract_and_store(
+        session=db_session,
+        message=message,
+        llm=llm,
+        catalog=CATALOG,
+        category_ids=category_ids,
+        today=_TODAY,
+        models=_VOICE_MODELS,
+        max_attempts=2,
+        max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_audio=_fetch_ok,
+    )
+
+    assert outcome.status == ExtractionStatus.FAILED
+
+    extraction_rows = (await db_session.execute(select(Extraction))).scalars().all()
+    assert len(extraction_rows) == 1
+    assert extraction_rows[0].status == ExtractionStatus.FAILED
+    assert extraction_rows[0].model_id == NO_RESPONSE_MODEL_ID
+
+    db_session.expire_all()
+    refreshed = await db_session.get(Message, message_id)
+    assert refreshed is not None
+    assert refreshed.status == MessageStatus.PENDING

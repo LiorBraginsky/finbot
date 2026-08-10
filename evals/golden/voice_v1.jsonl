@@ -1,0 +1,5 @@
+{"id": "single-01", "audio": "single-01.oga", "expected": [{"item": "хліб", "amount": "50.00", "category": "groceries", "occurred_offset_days": 0}], "expected_transcript_contains": ["хліб", "50"]}
+{"id": "multi-02", "audio": "multi-02.oga", "expected": [{"item": "хліб", "amount": "50.00", "category": "groceries", "occurred_offset_days": 0}, {"item": "таксі", "amount": "200.00", "category": "transport", "occurred_offset_days": 0}], "expected_transcript_contains": ["хліб", "таксі"]}
+{"id": "self-correction-03", "audio": "self-correction-03.oga", "expected": [{"item": "хліб", "amount": "60.00", "category": "groceries", "occurred_offset_days": 0}], "expected_transcript_contains": ["шістдесят"]}
+{"id": "relative-date-04", "audio": "relative-date-04.oga", "expected": [{"item": "кава", "amount": "65.00", "category": "dining_out", "occurred_offset_days": -1}], "expected_transcript_contains": ["кава", "вчора"]}
+{"id": "no-amount-05", "audio": "no-amount-05.oga", "expected": [], "expected_transcript_contains": ["завтра"]}

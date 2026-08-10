@@ -40,7 +40,14 @@ NO_EXPENSE_REPLY = (
     "Не зрозумів, що саме витрачено. Напиши, будь ласка, що і скільки — "
     "наприклад: «хліб 50, таксі 200»."
 )
-UNSUPPORTED_MODALITY_REPLY = "Поки що я розумію лише текст. Голос і фото — скоро."
+UNSUPPORTED_MODALITY_REPLY = "Поки що я розумію лише текст і голос. Фото — скоро."
+# Sent when a voice message arrives while `MODEL_VOICE` is unset
+# (core.extraction.pipeline, docs/roadmap.md Stage 2) — the owner sets it
+# after running the voice eval.
+VOICE_NOT_CONFIGURED_REPLY = (
+    "Голосові повідомлення ще не налаштовані. Напиши, будь ласка, текстом — "
+    "наприклад: «хліб 50, таксі 200»."
+)
 CALLBACK_FAILURE_REPLY = "Не вдалося, спробуй ще"
 EMPTY_REPORT_REPLY = "Нічого не записано за цей період."
 # Sent once a message's processing rounds are exhausted (messages.status ->
@@ -57,6 +64,20 @@ PROCESSING_FAILED_REPLY = (
 FOREIGN_CURRENCY_REPLY = (
     "Поки що я розумію лише гривні. Валюти зʼявляться скоро — а це запиши в гривнях, будь ласка."
 )
+
+
+def voice_too_long_reply(max_seconds: int) -> str:
+    """Sent when `message.duration_seconds` exceeds `Settings.
+    max_voice_seconds` (`core.extraction.pipeline`, docs/roadmap.md Stage 2,
+    spec §7) — a function, not a constant, so the number in the message
+    always matches whatever the deployment is actually configured with.
+    """
+    return (
+        f"Це голосове задовге — я розумію нотатки до {max_seconds} секунд. "
+        "Спробуй, будь ласка, коротше або текстом."
+    )
+
+
 # /help and the catch-all for an unrecognised "/command" (handlers.py) both
 # answer with this — a command Telegram sent to a handler that doesn't exist
 # must never be silence (docs/roadmap.md's Stage 1 hardening).
@@ -115,10 +136,43 @@ def _row_text(line: ConfirmationLine, *, today: date) -> str:
     return f"{line.index}. {emoji} {line.item} — {_amount_text(line.amount)} ₴{suffix}"
 
 
-def render_confirmation(lines: Sequence[ConfirmationLine], *, today: date) -> str:
+_TRANSCRIPT_MAX_LENGTH = 500
+
+
+def transcript_line(transcript: str) -> str:
+    """The 🎤 «...» line a voice confirmation shows above the numbered list
+    (docs/roadmap.md Stage 2) — also reused for the zero-expenses
+    clarification (`runner.py`), so a household member always sees what the
+    bot heard, not only what it managed to extract from it.
+
+    Truncated to `_TRANSCRIPT_MAX_LENGTH` characters, with a trailing "…" —
+    the same truncate-don't-reject choice `core.extraction.schema.
+    ExpenseDraft._clean_item` makes for an over-long item, applied here
+    because Telegram's own 4096-character message limit is real: an
+    unbounded transcript plus a numbered list of several expenses could
+    exceed it, `bot.send_message` would then raise, and — because
+    `extract_and_store` already committed the expenses before this ever
+    runs (write, then reply, ADR-0007) — the household would see no
+    confirmation at all for expenses that were, in fact, recorded.
+    `messages.raw_text` keeps the untruncated transcript regardless; only
+    what is shown here is shortened.
+    """
+    shown = (
+        transcript
+        if len(transcript) <= _TRANSCRIPT_MAX_LENGTH
+        else f"{transcript[:_TRANSCRIPT_MAX_LENGTH]}…"
+    )
+    return f"🎤 «{shown}»"
+
+
+def render_confirmation(
+    lines: Sequence[ConfirmationLine], *, today: date, transcript: str | None = None
+) -> str:
     """ADR-0007: one message per incoming message. A single expense gets no
     number and no total line; several get a numbered list plus `Разом`,
-    computed over the still-active lines only.
+    computed over the still-active lines only. `transcript` is voice only
+    (docs/roadmap.md Stage 2): when given, it is shown as its own line above
+    everything else, produced by neither of the two shapes below.
     """
     if not lines:
         msg = "render_confirmation requires at least one line; use NO_EXPENSE_REPLY for zero"
@@ -128,12 +182,14 @@ def render_confirmation(lines: Sequence[ConfirmationLine], *, today: date) -> st
         line = lines[0]
         emoji = _EMOJI_BY_SLUG[line.category_slug]
         suffix = _date_suffix(line.occurred_at, today=today)
-        return f"✅ {emoji} {line.item} — {_amount_text(line.amount)} ₴{suffix}"
+        body = f"✅ {emoji} {line.item} — {_amount_text(line.amount)} ₴{suffix}"
+    else:
+        header = f"✅ Записав {len(lines)}:"
+        rows = [_row_text(line, today=today) for line in lines]
+        active_total = sum((line.amount for line in lines if not line.deleted), Decimal("0"))
+        body = "\n".join([header, *rows, f"Разом: {_amount_text(active_total)} ₴"])
 
-    header = f"✅ Записав {len(lines)}:"
-    rows = [_row_text(line, today=today) for line in lines]
-    active_total = sum((line.amount for line in lines if not line.deleted), Decimal("0"))
-    return "\n".join([header, *rows, f"Разом: {_amount_text(active_total)} ₴"])
+    return body if transcript is None else f"{transcript_line(transcript)}\n{body}"
 
 
 def render_report(report: Report) -> str:

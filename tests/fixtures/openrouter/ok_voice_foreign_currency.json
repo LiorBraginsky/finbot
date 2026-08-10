@@ -1,0 +1,23 @@
+{
+  "id": "gen-fixture-ok-voice-foreign-currency",
+  "provider": "Google",
+  "model": "google/gemini-3.5-flash-lite",
+  "object": "chat.completion",
+  "created": 1754800102,
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"transcript\": \"кава десять доларів\", \"expenses\": [{\"item\": \"кава\", \"amount\": 10, \"category\": \"dining_out\", \"occurred_at\": null}]}"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 880,
+    "completion_tokens": 40,
+    "total_tokens": 920,
+    "cost": 0.000210
+  }
+}

@@ -83,6 +83,12 @@ ignore = ["S104"]
 # justification as the catalog above.
 "tests/integration/test_currency_guard.py" = ["RUF001"]
 "tests/integration/test_extraction_pipeline.py" = ["RUF001"]
+# Voice Ukrainian/Russian transcript text (docs/roadmap.md Stage 2), same
+# justification as the catalog above.
+"tests/unit/test_extraction_schema.py" = ["RUF001"]
+"tests/unit/test_extraction_voice.py" = ["RUF001"]
+"tests/integration/test_confirmation_flow.py" = ["RUF001"]
+"tests/integration/test_message_repo.py" = ["RUF001"]
 
 [tool.mypy]
 python_version = "3.12"

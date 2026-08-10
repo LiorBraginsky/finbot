@@ -21,7 +21,11 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from finbot.adapters.telegram.main import build_dispatcher
-from finbot.adapters.telegram.render import EMPTY_REPORT_REPLY, HELP_TEXT
+from finbot.adapters.telegram.render import (
+    EMPTY_REPORT_REPLY,
+    HELP_TEXT,
+    UNSUPPORTED_MODALITY_REPLY,
+)
 from finbot.core.models import MessageKind, MessageStatus
 from finbot.repo.models import Message, User
 from tests.support.fake_session import FakeSession
@@ -29,6 +33,7 @@ from tests.support.updates import (
     ALLOWED_USER_ID,
     CHAT_ID,
     STRANGER_USER_ID,
+    photo_update,
     sticker_update,
     text_update,
     voice_update,
@@ -169,10 +174,14 @@ async def test_unrecognised_command_gets_the_help_text_not_silence(
     assert row.status == MessageStatus.SKIPPED
 
 
-async def test_voice_message_stores_file_id(
+async def test_voice_message_stores_file_id_and_is_pending(
     dispatcher: Dispatcher, bot: Bot, db_session: AsyncSession
 ) -> None:
-    update = voice_update(update_id=4001, file_id="voice-file-id")
+    """From Stage 2 (docs/roadmap.md): voice is PENDING, like plain text, and
+    gets no immediate reply at this layer — `runner.py`'s drain loop is what
+    eventually replies, exactly as it already does for text.
+    """
+    update = voice_update(update_id=4001, file_id="voice-file-id", duration=7)
 
     await dispatcher.feed_raw_update(bot, update)
 
@@ -180,6 +189,30 @@ async def test_voice_message_stores_file_id(
     assert row.kind == MessageKind.VOICE
     assert row.file_id == "voice-file-id"
     assert row.raw_text is None
+    assert row.duration_seconds == 7
+    assert row.status == MessageStatus.PENDING
+
+    assert cast(FakeSession, bot.session).requests == []
+
+
+async def test_photo_message_still_gets_the_unsupported_modality_reply(
+    dispatcher: Dispatcher, bot: Bot, db_session: AsyncSession
+) -> None:
+    """Photo keeps its Stage-1 behaviour until Stage 4: SKIPPED, and an
+    immediate inline reply — the `F.voice` half of that handler is what left
+    (docs/roadmap.md Stage 2), not the `F.photo` half.
+    """
+    update = photo_update(update_id=4501, file_id="photo-file-id")
+
+    await dispatcher.feed_raw_update(bot, update)
+
+    row = (await db_session.execute(select(Message))).scalar_one()
+    assert row.kind == MessageKind.PHOTO
+    assert row.status == MessageStatus.SKIPPED
+
+    sent = [r for r in cast(FakeSession, bot.session).requests if isinstance(r, SendMessage)]
+    assert len(sent) == 1
+    assert sent[0].text == UNSUPPORTED_MODALITY_REPLY
 
 
 async def test_unsupported_content_is_not_persisted(

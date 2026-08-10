@@ -67,6 +67,21 @@ class ExtractionResult(BaseModel):
     expenses: list[ExpenseDraft]
 
 
+class VoiceExtractionResult(BaseModel):
+    """`transcript` alongside `expenses` (docs/roadmap.md Stage 2, ADR-0004):
+    a separate model from `ExtractionResult`, not that model with an
+    optional field bolted on, because the two prompts have different
+    contracts — one call transcribes then extracts, the other only
+    extracts — and `extra="forbid"` on each should describe exactly one of
+    them.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    transcript: str
+    expenses: list[ExpenseDraft]
+
+
 def text_json_schema(slugs: Sequence[str]) -> dict[str, Any]:
     """Hand-built, strict-mode-ready JSON Schema for `ExtractionResult`.
 
@@ -93,5 +108,39 @@ def text_json_schema(slugs: Sequence[str]) -> dict[str, Any]:
             "expenses": {"type": "array", "items": expense_schema},
         },
         "required": ["expenses"],
+        "additionalProperties": False,
+    }
+
+
+def voice_json_schema(slugs: Sequence[str]) -> dict[str, Any]:
+    """Hand-built, strict-mode-ready JSON Schema for `VoiceExtractionResult`
+    — `text_json_schema`'s own docstring explains why hand-built at all.
+
+    Deliberately a fully independent literal from `text_json_schema`, not a
+    shared `expense_schema` helper the two both call: ADR-0014 keeps
+    `ExpenseDraft` and its hand-derived wire shape "in one file, twenty
+    lines apart" as the guard against drift rather than a clever
+    abstraction, and the same reasoning applies here — two contracts that
+    are free to evolve independently should not share the code that
+    describes them.
+    """
+    expense_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "item": {"type": "string"},
+            "amount": {"type": "number"},
+            "category": {"type": "string", "enum": list(slugs)},
+            "occurred_at": {"type": ["string", "null"]},
+        },
+        "required": ["item", "amount", "category", "occurred_at"],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "transcript": {"type": "string"},
+            "expenses": {"type": "array", "items": expense_schema},
+        },
+        "required": ["transcript", "expenses"],
         "additionalProperties": False,
     }

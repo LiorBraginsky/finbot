@@ -19,7 +19,12 @@ import pytest
 from pydantic import ValidationError
 
 from finbot.core.categories.catalog import CATALOG
-from finbot.core.extraction.schema import ExtractionResult, text_json_schema
+from finbot.core.extraction.schema import (
+    ExtractionResult,
+    VoiceExtractionResult,
+    text_json_schema,
+    voice_json_schema,
+)
 
 _SLUGS_IN_ORDER = tuple(c.slug for c in CATALOG)
 
@@ -113,3 +118,70 @@ def test_an_expense_with_an_extra_key_is_also_rejected() -> None:
     }
     with pytest.raises(ValidationError):
         ExtractionResult.model_validate(instance)
+
+
+# --- voice_json_schema / VoiceExtractionResult -------------------------------
+
+
+def test_voice_schema_has_at_least_two_object_nodes() -> None:
+    schema = voice_json_schema(_SLUGS_IN_ORDER)
+    object_nodes = list(_iter_object_nodes(schema))
+    assert len(object_nodes) >= 2
+
+
+def test_every_voice_object_node_forbids_additional_properties() -> None:
+    schema = voice_json_schema(_SLUGS_IN_ORDER)
+    for node in _iter_object_nodes(schema):
+        assert node.get("additionalProperties") is False, node
+
+
+def test_every_voice_object_node_requires_all_of_its_own_properties() -> None:
+    schema = voice_json_schema(_SLUGS_IN_ORDER)
+    for node in _iter_object_nodes(schema):
+        properties = node.get("properties", {})
+        required = node.get("required", [])
+        assert sorted(required) == sorted(properties), node
+
+
+def test_voice_schema_contains_no_ref_or_defs_anywhere() -> None:
+    schema = voice_json_schema(_SLUGS_IN_ORDER)
+    for node in _iter_dicts(schema):
+        assert "$ref" not in node, node
+        assert "$defs" not in node, node
+
+
+def test_voice_schema_top_level_requires_transcript_and_expenses() -> None:
+    schema = voice_json_schema(_SLUGS_IN_ORDER)
+    assert sorted(schema["required"]) == ["expenses", "transcript"]
+
+
+def test_voice_category_enum_is_every_catalog_slug_in_catalog_order() -> None:
+    schema = voice_json_schema(_SLUGS_IN_ORDER)
+    category_node = schema["properties"]["expenses"]["items"]["properties"]["category"]
+    assert category_node["enum"] == list(_SLUGS_IN_ORDER)
+    assert category_node["enum"][-1] == "other"
+
+
+def test_a_valid_voice_instance_parses_into_voice_extraction_result() -> None:
+    instance = {
+        "transcript": "хліб пʼятдесят і таксі двісті",
+        "expenses": [
+            {"item": "хліб", "amount": 50, "category": "groceries", "occurred_at": None},
+            {"item": "таксі", "amount": 200, "category": "transport", "occurred_at": None},
+        ],
+    }
+    result = VoiceExtractionResult.model_validate(instance)
+    assert result.transcript == "хліб пʼятдесят і таксі двісті"
+    assert len(result.expenses) == 2
+
+
+def test_a_voice_instance_with_an_extra_key_is_rejected_by_extra_forbid() -> None:
+    instance = {"transcript": "х", "expenses": [], "note": "not part of the schema"}
+    with pytest.raises(ValidationError):
+        VoiceExtractionResult.model_validate(instance)
+
+
+def test_a_voice_instance_missing_transcript_is_rejected() -> None:
+    instance = {"expenses": []}
+    with pytest.raises(ValidationError):
+        VoiceExtractionResult.model_validate(instance)

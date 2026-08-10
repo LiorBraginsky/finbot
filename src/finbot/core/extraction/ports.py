@@ -15,10 +15,18 @@ from typing import Any, Protocol
 class LlmRequest:
     """Everything needed to make one chat-completions call. Immutable so a
     repair request can be built from a previous one without aliasing bugs.
+
+    `messages[n]["content"]` is `Mapping[str, Any]`, not `Mapping[str, str]`:
+    `core.extraction.text` sends a plain string, but `core.extraction.voice`
+    sends a list of content parts (`[{"type": "input_audio", ...}]`) — the
+    exact shape OpenRouter's audio-input API requires (ADR-0004,
+    docs/roadmap.md Stage 2). `llm/openrouter.py` never inspects a message
+    beyond `dict(message)`, so it does not care which shape it is passing
+    through.
     """
 
     models: tuple[str, ...]
-    messages: tuple[Mapping[str, str], ...]
+    messages: tuple[Mapping[str, Any], ...]
     json_schema: Mapping[str, Any]
     schema_name: str
 
@@ -66,3 +74,15 @@ class LlmError(Exception):
 
 class LlmClient(Protocol):
     async def complete(self, request: LlmRequest) -> LlmResponse: ...
+
+
+class AudioFetchError(Exception):
+    """Downloading a voice note or converting it to mp3 failed, before any
+    model call was ever made — a Telegram download failure, an oversized
+    file, or a nonzero `ffmpeg` exit. Raised by `adapters.telegram.audio`,
+    the only place in this project that touches aiogram's download API or
+    shells out to `ffmpeg`, and caught by `core.extraction.pipeline`, which
+    must never import that module directly (CLAUDE.md rule 3). This class is
+    the seam between the two, exactly as `LlmClient` is for the model call
+    itself: `core` depends on the exception type, never on what raises it.
+    """

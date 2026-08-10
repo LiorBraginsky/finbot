@@ -39,25 +39,32 @@ from evals.scoring import (
     CaseScore,
     GoldenCase,
     ModelResult,
+    VoiceCaseScore,
+    VoiceGoldenCase,
+    VoiceModelResult,
     aggregate,
+    aggregate_voice,
     failed_case_score,
+    failed_voice_case_score,
     load_golden_cases,
+    load_voice_golden_cases,
     render_table,
+    render_voice_table,
     score_case,
+    score_voice_case,
 )
 from finbot.core.categories.catalog import CATALOG
+from finbot.core.extraction import voice as voice_extraction
+from finbot.core.extraction.common import ExtractionInvalidError
 from finbot.core.extraction.ports import LlmClient, LlmError
-from finbot.core.extraction.text import (
-    ExtractionInvalidError,
-    build_request,
-    parse_content,
-    resolve_dates,
-)
+from finbot.core.extraction.text import build_request, parse_content, resolve_dates
 from finbot.llm.openrouter import OpenRouterClient
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CASES_PATH = Path(__file__).parent / "golden" / "text_v1.jsonl"
+_DEFAULT_VOICE_CASES_PATH = Path(__file__).parent / "golden" / "voice_v1.jsonl"
+_DEFAULT_VOICE_AUDIO_DIR = Path(__file__).parent / "golden" / "voice"
 # Matches adapters/telegram/main.py's own default: "today" for date-offset
 # cases is a Kyiv-local calendar date, not a UTC one.
 _DEFAULT_TZ = ZoneInfo("Europe/Kyiv")
@@ -176,6 +183,67 @@ async def run_model(
     return aggregate(model, scores)
 
 
+async def run_voice_case(
+    client: LlmClient,
+    model: str,
+    case: VoiceGoldenCase,
+    today: date,
+    *,
+    save_raw: Path | None = None,
+    repeat_index: int = 0,
+) -> VoiceCaseScore:
+    """Mirrors `run_case` — one call, no repair loop, same reasoning.
+
+    `case.audio_base64` is already read and encoded by `load_voice_golden_
+    cases`, eagerly, for every case, before this function or `client.
+    complete` is ever called — so a missing audio file fails fast, before
+    anything is billed, rather than mid-run after some cases already were.
+    """
+    request = voice_extraction.build_request(
+        audio_base64=case.audio_base64, today=today, catalog=CATALOG, models=(model,)
+    )
+    try:
+        response = await client.complete(request)
+    except LlmError as exc:
+        logger.warning("model %s errored on case %s: %s", model, case.case_id, exc)
+        return failed_voice_case_score(case.case_id, cost_usd=exc.cost_usd, latency_ms=None)
+
+    if save_raw is not None:
+        _save_raw(save_raw, model, case.case_id, repeat_index, response.raw_text)
+
+    try:
+        result = voice_extraction.parse_content(response.content)
+    except ExtractionInvalidError as exc:
+        logger.warning("model %s produced invalid output on case %s: %s", model, case.case_id, exc)
+        return failed_voice_case_score(
+            case.case_id, cost_usd=response.cost_usd, latency_ms=response.latency_ms
+        )
+
+    resolved = voice_extraction.resolve_dates(result, today)
+    return score_voice_case(
+        case, today, resolved, cost_usd=response.cost_usd, latency_ms=response.latency_ms
+    )
+
+
+async def run_voice_model(
+    client: LlmClient,
+    model: str,
+    cases: Sequence[VoiceGoldenCase],
+    today: date,
+    *,
+    repeats: int = 1,
+    save_raw: Path | None = None,
+) -> VoiceModelResult:
+    scores = [
+        await run_voice_case(
+            client, model, case, today, save_raw=save_raw, repeat_index=repeat_index
+        )
+        for case in cases
+        for repeat_index in range(repeats)
+    ]
+    return aggregate_voice(model, scores)
+
+
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m evals.run",
@@ -186,10 +254,25 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         "--models", required=True, help="comma-separated OpenRouter model ids, e.g. a,b,c"
     )
     parser.add_argument(
+        "--modality",
+        choices=("text", "voice"),
+        default="text",
+        help="which extraction modality to evaluate (default: text)",
+    )
+    parser.add_argument(
         "--cases",
         type=Path,
         default=_DEFAULT_CASES_PATH,
-        help=f"path to a golden .jsonl file (default: {_DEFAULT_CASES_PATH})",
+        help=f"path to a golden .jsonl file (default: {_DEFAULT_CASES_PATH} for "
+        f"--modality text, {_DEFAULT_VOICE_CASES_PATH} for --modality voice)",
+    )
+    parser.add_argument(
+        "--audio-dir",
+        type=Path,
+        default=_DEFAULT_VOICE_AUDIO_DIR,
+        dest="audio_dir",
+        help=f"directory `--modality voice` reads case audio from "
+        f"(default: {_DEFAULT_VOICE_AUDIO_DIR})",
     )
     parser.add_argument(
         "--repeats", type=int, default=1, help="calls per case per model (default: 1)"
@@ -227,8 +310,25 @@ async def main(argv: Sequence[str] | None = None) -> None:
         print("--models must name at least one OpenRouter model id", file=sys.stderr)  # noqa: T201
         raise SystemExit(1)
 
-    cases = load_golden_cases(args.cases)
     today = args.today or datetime.now(tz=_DEFAULT_TZ).date()
+    # args.cases stays at its own argparse default (the text file) unless
+    # the caller actually named one — --modality voice on its own should
+    # read voice_v1.jsonl, not text_v1.jsonl.
+    cases_path = (
+        _DEFAULT_VOICE_CASES_PATH
+        if args.modality == "voice" and args.cases == _DEFAULT_CASES_PATH
+        else args.cases
+    )
+
+    # Loaded before any socket is opened, same discipline as
+    # load_eval_settings's own API-key check: a missing golden case's audio
+    # file (evals.scoring.load_voice_golden_cases reads and base64-encodes
+    # every one, eagerly) must fail here, for free, rather than mid-run
+    # after some earlier cases were already billed.
+    if args.modality == "voice":
+        voice_cases = load_voice_golden_cases(cases_path, audio_dir=args.audio_dir)
+    else:
+        cases = load_golden_cases(cases_path)
 
     async with aiohttp.ClientSession() as http:
         client = OpenRouterClient(
@@ -237,6 +337,16 @@ async def main(argv: Sequence[str] | None = None) -> None:
             base_url=settings.openrouter_base_url,
             timeout_seconds=settings.llm_timeout_seconds,
         )
+        if args.modality == "voice":
+            voice_results = [
+                await run_voice_model(
+                    client, model, voice_cases, today, repeats=args.repeats, save_raw=args.save_raw
+                )
+                for model in models
+            ]
+            print(render_voice_table(voice_results))  # noqa: T201 -- the point of this CLI
+            return
+
         results = [
             await run_model(
                 client, model, cases, today, repeats=args.repeats, save_raw=args.save_raw

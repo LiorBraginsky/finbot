@@ -40,9 +40,35 @@ def test_non_numeric_allowlist_raises_validation_error() -> None:
 
 
 def test_unknown_env_keys_are_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MODEL_VOICE", "some/voice-model")
+    monkeypatch.setenv("SOME_UNKNOWN_KEY", "whatever")
     settings = Settings(**_kwargs())
     assert settings.allowed_user_ids == frozenset({111, 222})
+
+
+def test_model_voice_defaults_to_empty_and_candidates_default_to_empty_tuple() -> None:
+    settings = Settings(**_kwargs())
+    assert settings.model_voice == ""
+    assert settings.voice_model_candidates == ()
+
+
+def test_voice_model_candidates_is_just_model_voice_when_no_fallbacks() -> None:
+    settings = Settings(**_kwargs(model_voice="google/gemini-2.5-flash"))
+    assert settings.voice_model_candidates == ("google/gemini-2.5-flash",)
+
+
+def test_voice_model_candidates_appends_the_shared_fallback_list() -> None:
+    settings = Settings(**_kwargs(model_voice="google/gemini-2.5-flash", model_fallbacks="a, b ,"))
+    assert settings.voice_model_candidates == ("google/gemini-2.5-flash", "a", "b")
+
+
+def test_free_model_voice_raises_validation_error() -> None:
+    with pytest.raises(ValidationError):
+        Settings(**_kwargs(model_voice="qwen/qwen3.7-flash:free"))
+
+
+def test_max_voice_seconds_defaults_to_120() -> None:
+    settings = Settings(**_kwargs())
+    assert settings.max_voice_seconds == 120
 
 
 def test_model_candidates_strips_blanks_and_whitespace() -> None:
