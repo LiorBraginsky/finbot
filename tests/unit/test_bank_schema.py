@@ -155,6 +155,28 @@ def test_an_unknown_kind_coerces_to_unclassified_rather_than_raising() -> None:
     assert row.kind == BankRowKind.UNCLASSIFIED
 
 
+@pytest.mark.parametrize("unhashable_kind", [[], {}])
+def test_an_unhashable_kind_coerces_to_unclassified_rather_than_raising(
+    unhashable_kind: object,
+) -> None:
+    # A list/dict `kind` would raise `TypeError: unhashable type` out of
+    # `value in _BANK_ROW_WIRE_KIND_VALUES` without the `isinstance(value,
+    # str)` guard — this is the shape of garbage the validator exists to
+    # tolerate, not crash on.
+    row = BankRow.model_validate(
+        {
+            "date_header": "Сьогодні",
+            "time": None,
+            "merchant": "Silpo",
+            "amount": 100,
+            "kind": unhashable_kind,
+            "category": "groceries",
+            "partially_visible": False,
+        }
+    )
+    assert row.kind == BankRowKind.UNCLASSIFIED
+
+
 def test_an_unknown_category_slug_coerces_to_other_rather_than_raising() -> None:
     row = BankRow.model_validate(
         {

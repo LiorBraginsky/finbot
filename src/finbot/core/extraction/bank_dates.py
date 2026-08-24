@@ -128,7 +128,11 @@ def resolve(header: str, *, anchor: date) -> date | None:
     else:
         return None
 
-    if not day_token.isdigit():
+    # `str.isdigit()` accepts characters `int()` rejects — a superscript
+    # "²" is `isdigit() == True` but `isdecimal() == False`, and `int()`
+    # raises ValueError on it. `isdecimal()` is the check that actually
+    # guarantees `int(day_token)` below cannot raise.
+    if not day_token.isdecimal():
         return None
     day = int(day_token)
 

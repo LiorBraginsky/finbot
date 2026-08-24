@@ -204,6 +204,14 @@ round.*
 
 **Done when:** a supermarket receipt decomposes into line items and the total reconciles.
 
+**Known bug from Stage 2.5, recorded here rather than nowhere:** a bank screenshot (or a
+receipt, once this stage exists) sent as a Telegram **document** rather than a compressed
+photo gets no reply at all. `adapters.telegram.mapping.to_incoming` checks `message.photo`,
+not `message.document`; a document-sent image has no Stage-0 schema slot, so it is silently
+ignored — never persisted, never a `messages` row, never anything to drain. This stage's own
+photo-vs-receipt disambiguation (the deferral above) is the natural place to also decide
+whether `message.document` with an image MIME type gets a schema slot.
+
 ---
 
 ## ⬜ Stage 5 — Category proposals
@@ -231,6 +239,15 @@ Only if the inline buttons prove insufficient in practice.
   restart. The foreign-currency guard must apply to the replied amount too — a
   household member correcting "50" to "50 dollars" must be refused exactly like a fresh
   message would be.
+- **Known bug from Stage 2.5, recorded here rather than nowhere: a voice confirmation
+  loses its `🎤 «…»` transcript line the moment anyone taps ✏️/🗑.**
+  `adapters.telegram.handlers._rerender_group` rebuilds the confirmation body from
+  `expenses.siblings` alone and calls `render_confirmation(lines, today=today)` with no
+  `transcript` argument, so the first correction on a voice-sourced group silently drops
+  the transcript for the rest of that group's life. This stage already owns corrections
+  UX, so the fix belongs here: `_rerender_group` needs the original message's transcript
+  (from `messages.raw_text` — a voice message's own, per `_extract_voice`) to pass
+  through on every re-render, not only the first send.
 
 ---
 

@@ -583,6 +583,14 @@ def render_voice_table(results: list[VoiceModelResult]) -> str:
 # format, but `bank_v1.jsonl` and the screenshots it labels live outside
 # this repository, loaded only through `load_bank_golden_cases` below.
 
+# The five wire kinds a hand-labelled row may declare — the same five
+# `BankRowKind` accepts on the wire. `unclassified` is a domain-only outcome
+# the model's own schema cannot produce (`BankRowKind`'s own docstring), so a
+# human labeller has no legitimate reason to write it either; a typo here
+# (`"expenses"`, `"Expense"`) is exactly the kind of silent damage this set
+# guards `_parse_bank_row` against.
+_BANK_ROW_WIRE_KINDS = frozenset(k.value for k in BankRowKind if k is not BankRowKind.UNCLASSIFIED)
+
 
 @dataclass(frozen=True)
 class BankRowExpectation:
@@ -680,6 +688,14 @@ def _read_image_bytes(image_path: Path) -> bytes:
 
 
 def _parse_bank_row(row: dict[str, Any], *, case_id: str, path: Path) -> BankRowExpectation:
+    kind = row["kind"]
+    if kind not in _BANK_ROW_WIRE_KINDS:
+        msg = (
+            f"{path}: golden case {case_id!r} row kind must be one of "
+            f"{sorted(_BANK_ROW_WIRE_KINDS)}, got {kind!r}"
+        )
+        raise TypeError(msg)
+
     amount = row["amount"]
     if not isinstance(amount, str):
         msg = (
@@ -687,8 +703,30 @@ def _parse_bank_row(row: dict[str, Any], *, case_id: str, path: Path) -> BankRow
             f"never a bare number, got {amount!r}"
         )
         raise TypeError(msg)
+
+    # `category`/`occurred_offset_days` are the format's own convention
+    # (evals/golden/bank/README.md): present exactly on an `expense` row,
+    # omitted on every other kind. Enforced here, not merely documented, for
+    # the same reason the kind check above is — a hand-typed case file is
+    # exactly where this drifts unnoticed.
+    has_category = "category" in row
+    has_offset = "occurred_offset_days" in row
+    is_expense = kind == BankRowKind.EXPENSE.value
+    if is_expense and not (has_category and has_offset):
+        msg = (
+            f"{path}: golden case {case_id!r} expense row must set both "
+            "'category' and 'occurred_offset_days'"
+        )
+        raise TypeError(msg)
+    if not is_expense and (has_category or has_offset):
+        msg = (
+            f"{path}: golden case {case_id!r} non-expense row (kind={kind!r}) must omit "
+            "'category' and 'occurred_offset_days'"
+        )
+        raise TypeError(msg)
+
     return BankRowExpectation(
-        kind=row["kind"],
+        kind=kind,
         amount=Decimal(amount),
         partially_visible=bool(row["partially_visible"]),
         category=row.get("category"),

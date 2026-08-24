@@ -17,7 +17,8 @@ from aiogram.methods import AnswerCallbackQuery, EditMessageText
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from finbot.adapters.telegram.callbacks import MessageAction
+from finbot.adapters.telegram.callbacks import ExpenseAction, MessageAction
+from finbot.adapters.telegram.keyboards import MAX_CONFIRMATION_ROWS
 from finbot.adapters.telegram.main import build_dispatcher
 from finbot.core.models import IncomingMessage, MessageKind
 from finbot.repo import categories, expenses, messages, users
@@ -167,3 +168,56 @@ async def test_stranger_delete_all_callback_makes_no_api_call_and_no_db_change(
         expense = await db_session.get(Expense, expense_id)
         assert expense is not None
         assert expense.deleted_at is None
+
+
+# --- `_rerender_group`'s PHOTO branch, observed through a single-row tap  --
+# --- rather than "delete all" itself (R9: one-tap-undoable for the        --
+# --- group's whole life, not only on the first send) ------------------------
+#
+# Neither this module's own tests above (delete-all leaves nothing active,
+# so the keyboard is None either way), test_callback_flow.py (only ever
+# seeds TEXT-kind messages, so `delete_all_message_id` is always None), nor
+# test_bank_flow.py (asserts only the first send) exercises this branch —
+# these two do.
+
+
+async def test_a_single_row_tap_on_a_bank_group_keeps_the_delete_all_row(
+    dispatcher: Dispatcher, bot: Bot, db_session: AsyncSession
+) -> None:
+    _message_id, expense_ids, _user_id = await _seed_bank_expenses(db_session, rows=3)
+    update = callback_update(7001, ExpenseAction(action="del", expense_id=expense_ids[0]).pack())
+
+    await dispatcher.feed_raw_update(bot, update)
+
+    edits = [r for r in cast(FakeSession, bot.session).requests if isinstance(r, EditMessageText)]
+    assert len(edits) == 1
+    keyboard = edits[0].reply_markup
+    assert keyboard is not None
+    # Two still-active rows (✏️/🗑 each) plus the delete-all row, and the
+    # delete-all row is still last — the group stays one-tap-undoable for
+    # its whole life, not only on the first send.
+    last_row = keyboard.inline_keyboard[-1]
+    assert len(last_row) == 1
+    assert last_row[0].text == "🗑 Видалити все"
+
+
+async def test_a_bank_group_over_the_row_cap_shows_only_the_delete_all_row(
+    dispatcher: Dispatcher, bot: Bot, db_session: AsyncSession
+) -> None:
+    rows = MAX_CONFIRMATION_ROWS + 1
+    _message_id, expense_ids, _user_id = await _seed_bank_expenses(db_session, rows=rows)
+    # "back" re-renders without changing which rows are active, so all
+    # `rows` stay active and the cap (keyboards.confirmation_keyboard) is
+    # exercised directly.
+    update = callback_update(7002, ExpenseAction(action="back", expense_id=expense_ids[0]).pack())
+
+    await dispatcher.feed_raw_update(bot, update)
+
+    edits = [r for r in cast(FakeSession, bot.session).requests if isinstance(r, EditMessageText)]
+    assert len(edits) == 1
+    keyboard = edits[0].reply_markup
+    assert keyboard is not None
+    assert len(keyboard.inline_keyboard) == 1
+    only_row = keyboard.inline_keyboard[0]
+    assert len(only_row) == 1
+    assert only_row[0].text == "🗑 Видалити все"

@@ -102,11 +102,23 @@ by hand; the roadmap records that deferral as this stage's one known-wrong case.
 
 ### 6. The dedup key is `date | time | amount`, and merchant is deliberately excluded
 
-`expenses.bank_txn_key` is `f"{occurred_at.isoformat()}|{time or ''}|{amount:.2f}"`, unique per
-`(user_id, bank_txn_key)`, inserted with `ON CONFLICT DO NOTHING … RETURNING id`. A `None` return
-*is* the "already recorded" counter the reply needs — never a `SELECT`-then-filter, for ADR-0012's
-reason: this project runs its tests against a real Postgres precisely so a unique index can be
-relied on as the guarantee instead of re-derived in application code.
+`expenses.bank_txn_key` is `f"{occurred_at.isoformat()}|{_normalize_time(time)}|{amount:.2f}"`,
+unique per `(user_id, bank_txn_key)`, inserted with `ON CONFLICT DO NOTHING … RETURNING id`. A
+`None` return *is* the "already recorded" counter the reply needs — never a `SELECT`-then-filter,
+for ADR-0012's reason: this project runs its tests against a real Postgres precisely so a unique
+index can be relied on as the guarantee instead of re-derived in application code.
+
+**`time` is normalised before it enters the key, not passed through verbatim.** `"9:05"` and
+`"09:05"` name the same clock time, but `MODEL_FALLBACKS` is shared across modalities, so a retry
+served by the fallback is a *different model reading the same pixels* — exactly where formatting
+like zero-padding drifts. Without normalising, two reads of one transaction would mint two keys and
+double-count money, the same failure mode merchant's exclusion above already exists to prevent.
+`bank_txn_key` therefore normalises `time` through a `^(\d{1,2}):(\d{2})$` match first: a match
+zero-pads the hour, anything else (empty, unrecognised, or too long to be a clock time at all)
+collapses to `""`, the same "no information" value `time=None` already produces. This also closes a
+second hole for free: `bank_txn_key` is `String(64)`, and an unbounded `time` reaching the key
+verbatim could overflow it and raise `StringDataRightTruncation` out of `create_bank_row` — the
+normalised form is always five characters or empty.
 
 **Merchant is excluded on purpose, and this is the load-bearing part of the key.** Merchant strings
 are the noisiest field on the wire — a trailing reference number, a truncated name, a different
@@ -157,6 +169,12 @@ variance is the one field left out.
   a header shape the tables do not know returns `None`, and the reply says `Не зрозумів дату: N`.
 - **A screenshot sent a day after it was taken is silently a day late until the household notices
   it in the note.** Stated, not hidden; Stage 6 is the real fix.
+- **R6 ("re-sending the same screenshot is a no-op") holds *per arrival day*, not forever**, for a
+  relative header. `Сьогодні`/`Вчора` resolve against the anchor (§4), so the exact same screenshot
+  re-sent tomorrow resolves to a different date and genuinely writes again — this is not a bug in
+  the dedup key, it is what "the model is never told today's date" (§1) implies once the date the
+  household means has itself moved on. The note printing the anchor (§5) is what makes this
+  visible rather than a silent surprise.
 - **The relative-word and month tables are the thing to extend when a new bank appears** — one
   dictionary each, plus rows in the existing test table, no new code path.
 - **`time=None` and `time=""` collapse to the same key**, so a feed that prints a time for a row

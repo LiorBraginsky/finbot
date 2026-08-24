@@ -16,6 +16,9 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+import pytest
+
+from finbot.core.extraction import bank
 from finbot.core.extraction.bank import BankPlan, bank_txn_key, plan_writes
 from finbot.core.extraction.schema import BankExtractionResult, BankRowKind
 
@@ -115,6 +118,24 @@ def test_kind_exclusion_takes_priority_over_every_other_exclusion_reason() -> No
             assert plan.skipped_by_kind == {domain_kind: 1}, wire_kind
 
 
+def test_the_write_decision_does_not_depend_on_skipped_kinds_membership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Blocking 3 of the stage-2_5 review: `plan_writes` decides "write" from
+    `row.kind is BankRowKind.EXPENSE` alone, never from membership in
+    `_SKIPPED_KINDS` — a whitelist, not the blacklist this replaces.
+    Shrinking `_SKIPPED_KINDS` to empty and confirming a savings row is
+    still excluded pins that: under the blacklist this fix replaced, the
+    same shrink would silently fall through to the write path and record a
+    savings jar as spending — exactly ADR-0017's failure mode, from a sixth
+    wire kind added later and forgotten in `_SKIPPED_KINDS`.
+    """
+    monkeypatch.setattr(bank, "_SKIPPED_KINDS", frozenset())
+    plan = _plan(_row(kind="savings"))
+    assert plan.writes == ()
+    assert plan.skipped_by_kind == {BankRowKind.SAVINGS: 1}
+
+
 def test_skipped_by_kind_counts_each_kind_independently_across_rows() -> None:
     plan = _plan(
         _row(kind="savings"),
@@ -165,6 +186,39 @@ def test_an_unresolvable_date_header_produces_no_draft() -> None:
     assert plan.unresolved_date == 1
     assert plan.cut_off == 0
     assert plan.bad_amount == 0
+
+
+# --- plan_writes must never raise: every way ExpenseDraft/to_amount can  ---
+# --- fail on an otherwise-valid expense row lands in bad_amount, never   ---
+# --- escapes (Blocking 1 of the stage-2_5 review) --------------------------
+
+
+def test_a_blank_merchant_produces_no_draft_instead_of_raising() -> None:
+    # Reachable from the prompt's own instruction (extract_bank.v1.md rule
+    # 7: leave an unreadable text field empty) — ExpenseDraft._clean_item
+    # raises ValueError on an empty `item`, which ValidationError wraps.
+    plan = _plan(_row(merchant=""))
+    assert plan.writes == ()
+    assert plan.bad_amount == 1
+    assert plan.cut_off == 0
+    assert plan.unresolved_date == 0
+
+
+def test_a_whitespace_only_merchant_produces_no_draft_instead_of_raising() -> None:
+    # Not caught by a bare `if not merchant` check — this is what makes
+    # `_clean_item`'s own `.strip()` the thing that must be exercised here.
+    plan = _plan(_row(merchant="   "))
+    assert plan.writes == ()
+    assert plan.bad_amount == 1
+
+
+def test_an_extreme_amount_produces_no_draft_instead_of_raising_arithmeticerror() -> None:
+    # Decimal.quantize raises decimal.InvalidOperation (an ArithmeticError,
+    # not a ValueError) for an amount this large — a plain `except
+    # ValueError` around to_amount misses it entirely.
+    plan = _plan(_row(amount=Decimal("1e30")))
+    assert plan.writes == ()
+    assert plan.bad_amount == 1
 
 
 # --- is_transaction_feed: false overrides everything -----------------------

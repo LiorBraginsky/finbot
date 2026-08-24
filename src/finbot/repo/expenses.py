@@ -119,15 +119,22 @@ async def create_bank_row(
 
 
 async def manual_duplicate_candidates(
-    session: AsyncSession, pairs: Sequence[tuple[date, Decimal]]
+    session: AsyncSession, pairs: Sequence[tuple[date, Decimal]], *, user_id: int
 ) -> list[ExpenseView]:
-    """Non-deleted, non-bank expenses (`bank_txn_key IS NULL`) whose
-    `(occurred_at, amount)` matches one of `pairs` — the screenshot<->manual
-    collision Approach C2's key cannot itself catch, since a manually typed
-    expense carries no key at all. R7: named in the reply, never merged and
-    never suppressed — both rows keep existing, and the human resolves it
-    with 🗑. `pairs` is expected to be the handful of rows one screenshot
-    actually wrote, not a manual duplicate scan over the whole table.
+    """Non-deleted, non-bank expenses (`bank_txn_key IS NULL`) belonging to
+    `user_id` whose `(occurred_at, amount)` matches one of `pairs` — the
+    screenshot<->manual collision Approach C2's key cannot itself catch,
+    since a manually typed expense carries no key at all. R7: named in the
+    reply, never merged and never suppressed — both rows keep existing, and
+    the human resolves it with 🗑. `pairs` is expected to be the handful of
+    rows one screenshot actually wrote, not a manual duplicate scan over the
+    whole table.
+
+    Scoped to `user_id` for the same reason `bank_txn_key`'s own uniqueness
+    is per user (ADR-0018 §6): without it, one household member's screenshot
+    reports the *other* member's manually typed expense as a possible
+    duplicate, which is not a collision either of them can actually resolve
+    — a coincidence of two different people's spending, not a duplicate.
     """
     if not pairs:
         return []
@@ -142,6 +149,7 @@ async def manual_duplicate_candidates(
         )
         .join(Category, Category.id == Expense.category_id)
         .where(
+            Expense.user_id == user_id,
             Expense.deleted_at.is_(None),
             Expense.bank_txn_key.is_(None),
             tuple_(Expense.occurred_at, Expense.amount).in_(pairs),

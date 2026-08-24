@@ -111,20 +111,29 @@ async def _claimed_photo_message(session: AsyncSession, *, file_id: str) -> Mess
     return claimed
 
 
-async def _plain_message_id(session: AsyncSession, *, telegram_message_id: int) -> int:
+async def _plain_message_id(
+    session: AsyncSession,
+    *,
+    telegram_message_id: int,
+    telegram_user_id: int = 444444444,
+    display_name: str = "Alice",
+) -> int:
     """A `messages` row to hang a manually-typed expense off of — any valid
     FK target. `_initial_status` would make a plain-text row `pending`,
     which would make it compete with `_claimed_photo_message`'s own claim
     for `claim_next` (oldest `pending` row first) — marked `done` by hand
     right after, since only the FK target matters here, not the row's own
-    processing state.
+    processing state. `telegram_user_id` defaults to the same household
+    member `_claimed_photo_message` always uses; a caller passing a
+    different one is testing that the manual-collision probe is scoped by
+    `user_id`, not merely by `(occurred_at, amount)`.
     """
     incoming = IncomingMessage(
         telegram_update_id=1_000_000 + telegram_message_id,
         telegram_message_id=telegram_message_id,
         chat_id=-1001111111111,
-        telegram_user_id=444444444,
-        display_name="Alice",
+        telegram_user_id=telegram_user_id,
+        display_name=display_name,
         kind=MessageKind.TEXT,
         raw_text="кава 150",
     )
@@ -290,6 +299,49 @@ async def test_manual_expense_same_date_and_amount_is_left_alone_and_reported(
     all_expenses = (await db_session.execute(select(Expense))).scalars().all()
     assert len(all_expenses) == 2
     assert {row.id for row in all_expenses} == {manual_expense_id, outcome.expense_ids[0]}
+
+
+async def test_manual_expense_belonging_to_a_different_user_is_never_reported_as_a_collision(
+    db_session: AsyncSession,
+) -> None:
+    """ADR-0018 §6's own reasoning is that `user_id` scopes the key so the
+    household's two members cannot collide with each other; the manual-
+    collision probe has to share that scope, or one member's screenshot
+    reports the *other* member's manually typed expense as a possible
+    duplicate — a coincidence, not something either of them can resolve.
+    """
+    category_ids = await _category_ids(db_session)
+
+    # A different household member (a different telegram_user_id), same
+    # date and amount as the screenshot row below.
+    other_message_id = await _plain_message_id(
+        db_session, telegram_message_id=99, telegram_user_id=555555555, display_name="Bob"
+    )
+    other_user_id = await users.get_or_create(db_session, 555555555, "Bob")
+    other_expense_id = await expenses.create(
+        db_session,
+        message_id=other_message_id,
+        user_id=other_user_id,
+        category_id=category_ids["dining_out"],
+        item="кава",
+        amount=Decimal("150.00"),
+        occurred_at=_ANCHOR,
+    )
+    await db_session.commit()
+
+    body = _bank_response_body(
+        rows=[_row(merchant="кава", amount=150.00, time="08:00", category="dining_out")]
+    )
+    message = await _claimed_photo_message(db_session, file_id="p1")
+    outcome = await _run(db_session, message, FakeLlmClient(body), category_ids)
+
+    assert len(outcome.expense_ids) == 1
+    assert outcome.bank_summary is not None
+    assert outcome.bank_summary.manual_collisions == ()
+
+    all_expenses = (await db_session.execute(select(Expense))).scalars().all()
+    assert len(all_expenses) == 2
+    assert {row.id for row in all_expenses} == {other_expense_id, outcome.expense_ids[0]}
 
 
 async def test_soft_deleted_bank_row_is_not_resurrected_by_a_resend(

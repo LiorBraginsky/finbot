@@ -107,6 +107,18 @@ mean cost and latency p50/p95, alongside:
 > on: a savings jar or a transfer written as spending destroys a month of
 > reports; a missed expense is a nuisance the household will notice and
 > retype.
+>
+> **Its limit, stated plainly: it compares a multiset of amounts, nothing
+> more.** If a case's own `savings`/`transfer`/`income` row and a real
+> `expense` row happen to share an amount, a model that *swaps* their kinds
+> — writes the savings-jar amount as the expense, skips the real expense —
+> still passes, because the written amount is still a member of the allowed
+> multiset. This has not shown up in any case set built so far, precisely
+> because real amounts rarely collide across kinds. **If a case set ever
+> needs two same-amount rows of different kinds, `no_false_expense`'s
+> multiset-of-amounts check is no longer enough for that case** — score it
+> instead on `(amount, resolved_date)` pairs, which the swap above does not
+> preserve.
 
 See `docs/plans/stage-2_5-bank-screenshots.md`'s Owner prerequisite 3 for the
 pre-registered gate this table is read against, and `docs/journal.md` for the

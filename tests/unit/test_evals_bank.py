@@ -127,6 +127,80 @@ def test_load_bank_golden_cases_rejects_a_bare_number_amount(tmp_path: Path) -> 
         load_bank_golden_cases(cases_path, images_dir=images_dir)
 
 
+def test_load_bank_golden_cases_rejects_an_unknown_kind(tmp_path: Path) -> None:
+    # A typo in a hand-typed label ("expenses", "Expense") would otherwise
+    # silently shrink allowed_amounts and make no_false_expense — the gate
+    # Stage 2.5's model choice turns on — quietly stricter than intended.
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    (images_dir / "c1.jpeg").write_bytes(_JPEG_BYTES)
+    bad_row = {
+        "kind": "expenses",
+        "amount": "10.00",
+        "category": "groceries",
+        "occurred_offset_days": 0,
+        "partially_visible": False,
+    }
+    cases_path = _write_cases(tmp_path, [_case_line(rows=[bad_row])])
+
+    with pytest.raises(TypeError):
+        load_bank_golden_cases(cases_path, images_dir=images_dir)
+
+
+def test_load_bank_golden_cases_rejects_an_expense_row_missing_category(tmp_path: Path) -> None:
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    (images_dir / "c1.jpeg").write_bytes(_JPEG_BYTES)
+    bad_row = {
+        "kind": "expense",
+        "amount": "10.00",
+        "occurred_offset_days": 0,
+        "partially_visible": False,
+    }
+    cases_path = _write_cases(tmp_path, [_case_line(rows=[bad_row])])
+
+    with pytest.raises(TypeError):
+        load_bank_golden_cases(cases_path, images_dir=images_dir)
+
+
+def test_load_bank_golden_cases_rejects_an_expense_row_missing_occurred_offset_days(
+    tmp_path: Path,
+) -> None:
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    (images_dir / "c1.jpeg").write_bytes(_JPEG_BYTES)
+    bad_row = {
+        "kind": "expense",
+        "amount": "10.00",
+        "category": "groceries",
+        "partially_visible": False,
+    }
+    cases_path = _write_cases(tmp_path, [_case_line(rows=[bad_row])])
+
+    with pytest.raises(TypeError):
+        load_bank_golden_cases(cases_path, images_dir=images_dir)
+
+
+def test_load_bank_golden_cases_rejects_a_non_expense_row_carrying_category(
+    tmp_path: Path,
+) -> None:
+    # The format's own convention (evals/golden/bank/README.md): category
+    # and occurred_offset_days are only ever present on an expense row.
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    (images_dir / "c1.jpeg").write_bytes(_JPEG_BYTES)
+    bad_row = {
+        "kind": "savings",
+        "amount": "6.35",
+        "category": "groceries",
+        "partially_visible": False,
+    }
+    cases_path = _write_cases(tmp_path, [_case_line(rows=[bad_row])])
+
+    with pytest.raises(TypeError):
+        load_bank_golden_cases(cases_path, images_dir=images_dir)
+
+
 def test_load_bank_golden_cases_raises_when_anchor_date_is_missing(tmp_path: Path) -> None:
     images_dir = tmp_path / "images"
     images_dir.mkdir()

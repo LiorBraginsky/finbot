@@ -559,7 +559,9 @@ async def _extract_bank(
         written_pairs.append((occurred_at, write.draft))
 
     manual_collisions = await expenses_repo.manual_duplicate_candidates(
-        session, [(occurred_at, draft.amount) for occurred_at, draft in written_pairs]
+        session,
+        [(occurred_at, draft.amount) for occurred_at, draft in written_pairs],
+        user_id=message.user_id,
     )
 
     await messages_repo.mark_done(session, message.id)

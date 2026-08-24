@@ -34,6 +34,26 @@ def test_bank_txn_key_treats_none_and_empty_string_time_the_same() -> None:
     assert with_none == with_empty == "2026-08-24||100.00"
 
 
+def test_bank_txn_key_normalises_an_unpadded_hour_to_match_a_padded_one() -> None:
+    # Two reads of the same pixels: MODEL_FALLBACKS means a retry can be
+    # served by a different model, and formatting drifts exactly here — a
+    # re-send must not mint a second key for the same transaction (ADR-0018
+    # §6, load-bearing part of Blocking 2).
+    unpadded = bank_txn_key(occurred_at=_OCCURRED_AT, time="9:05", amount=Decimal("100.00"))
+    padded = bank_txn_key(occurred_at=_OCCURRED_AT, time="09:05", amount=Decimal("100.00"))
+    assert unpadded == padded == "2026-08-24|09:05|100.00"
+
+
+def test_bank_txn_key_normalises_an_unrecognisable_or_over_long_time_to_empty() -> None:
+    # expenses.bank_txn_key is String(64); an unbounded `time` reaching the
+    # key verbatim would raise StringDataRightTruncation out of
+    # create_bank_row for a long enough string. Normalising anything that
+    # does not match H:MM/HH:MM to "" closes that regardless of length.
+    over_long = bank_txn_key(occurred_at=_OCCURRED_AT, time="1" * 100, amount=Decimal("100.00"))
+    empty = bank_txn_key(occurred_at=_OCCURRED_AT, time="", amount=Decimal("100.00"))
+    assert over_long == empty == "2026-08-24||100.00"
+
+
 def test_bank_txn_key_differs_by_date_time_or_amount() -> None:
     base = bank_txn_key(occurred_at=_OCCURRED_AT, time="14:32", amount=Decimal("100.00"))
     other_date = bank_txn_key(occurred_at=date(2026, 8, 23), time="14:32", amount=Decimal("100.00"))

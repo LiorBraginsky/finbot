@@ -170,7 +170,15 @@ class BankRow(BaseModel):
         # UNCLASSIFIED is worth more than a repair call. `mode="before"`
         # because pydantic would otherwise reject an out-of-enum string
         # before this validator ever ran.
-        if isinstance(value, BankRowKind) or value in _BANK_ROW_WIRE_KIND_VALUES:
+        #
+        # `isinstance(value, str)` guards the membership check below: an
+        # unhashable `value` (a model returning `"kind": []` or `{}`) would
+        # otherwise raise `TypeError` out of `in _BANK_ROW_WIRE_KIND_VALUES`
+        # — a schema-shaped input this validator exists specifically to
+        # tolerate, not crash on.
+        if isinstance(value, BankRowKind) or (
+            isinstance(value, str) and value in _BANK_ROW_WIRE_KIND_VALUES
+        ):
             return value
         logger.warning(
             "unknown bank row kind %r from model; coercing to %r",

@@ -55,6 +55,11 @@ _CASES: tuple[tuple[str, date, date | None], ...] = (
     (" Хф, 22 серпня", date(2026, 8, 24), None),
     # A non-numeric day token.
     ("АБ серпня", date(2026, 8, 24), None),
+    # A superscript digit: str.isdigit() is True for "²" but int("²") raises
+    # ValueError — this is the case that would crash `resolve` outright
+    # rather than return None if the day check used isdigit() instead of
+    # isdecimal().
+    ("² серпня", date(2026, 8, 24), None),
     # --- Controls that must resolve ------------------------------------
     ("Сб, 22 серпня", date(2026, 8, 22), date(2026, 8, 22)),  # anchor == candidate
 )
