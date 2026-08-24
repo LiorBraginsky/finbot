@@ -376,11 +376,11 @@ async def test_load_voice_golden_cases_reads_all_five_from_the_real_golden_set(
     )
     assert len(cases) == 5
     assert [case.case_id for case in cases] == [
-        "single-01",
-        "multi-02",
-        "self-correction-03",
-        "relative-date-04",
-        "no-amount-05",
+        "multi-four-01",
+        "self-correction-02",
+        "relative-date-03",
+        "not-expense-04",
+        "noisy-russian-05",
     ]
 
 
@@ -392,9 +392,9 @@ async def test_load_voice_golden_cases_parses_amounts_as_decimal_never_float(
     cases = await load_voice_golden_cases(
         _VOICE_GOLDEN_PATH, audio_dir=audio_dir, ffmpeg_path=fake_ffmpeg
     )
-    multi = next(case for case in cases if case.case_id == "multi-02")
-    assert multi.expected[1].amount == Decimal("200.00")
-    assert isinstance(multi.expected[1].amount, Decimal)
+    multi = next(case for case in cases if case.case_id == "multi-four-01")
+    assert multi.expected[2].amount == Decimal("93.00")
+    assert isinstance(multi.expected[2].amount, Decimal)
 
 
 async def test_load_voice_golden_cases_reads_the_audio_filename_and_transcript_substrings(
@@ -405,9 +405,15 @@ async def test_load_voice_golden_cases_reads_the_audio_filename_and_transcript_s
     cases = await load_voice_golden_cases(
         _VOICE_GOLDEN_PATH, audio_dir=audio_dir, ffmpeg_path=fake_ffmpeg
     )
-    single = next(case for case in cases if case.case_id == "single-01")
-    assert single.audio_filename == "single-01.oga"
-    assert single.expected_transcript_contains == ("хліб", "50")
+    dated = next(case for case in cases if case.case_id == "relative-date-03")
+    assert dated.audio_filename == "relative-date-03.oga"
+    assert dated.expected_transcript_contains == ("аптека", "вчора")
+    # No amount appears in any expected_transcript_contains: a speaker says
+    # "триста сорок" and a model may transcribe either that or "340", so the
+    # surface form is model-dependent. amount_exact already checks the value.
+    for case in cases:
+        for substring in case.expected_transcript_contains:
+            assert not any(char.isdigit() for char in substring), case.case_id
 
 
 # --- the ADR-0014 §7 guarantee: converted exactly as the bot converts, --------
