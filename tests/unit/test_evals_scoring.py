@@ -1,10 +1,17 @@
 """Unit tests for evals.scoring — pure, deterministic, no network, no model.
 
 Mirrors tests/unit/test_extraction_text.py's style: values in, values out.
+
+The voice-loading tests below never run a real `ffmpeg`: `_write_fake_ffmpeg`
+mirrors `tests/unit/test_audio.py`'s own helper of the same name, a tiny
+POSIX shell script standing in for `ffmpeg`'s stdin -> stdout contract, for
+the same reason that module gives — this project does not require `ffmpeg`
+on the machine running `pytest`, only inside the built image.
 """
 
 import base64
 import json
+import stat
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -16,6 +23,7 @@ from evals.scoring import (
     VoiceGoldenCase,
     aggregate,
     aggregate_voice,
+    convert_to_mp3,
     failed_case_score,
     failed_voice_case_score,
     load_golden_cases,
@@ -26,6 +34,8 @@ from evals.scoring import (
     score_voice_case,
 )
 
+from finbot.adapters.telegram.audio import convert_to_mp3 as _bot_convert_to_mp3
+from finbot.core.extraction.ports import AudioFetchError
 from finbot.core.extraction.schema import ExpenseDraft, ExtractionResult, VoiceExtractionResult
 
 _GOLDEN_PATH = Path(__file__).parents[2] / "evals" / "golden" / "text_v1.jsonl"
@@ -342,9 +352,28 @@ def _stub_audio_dir(tmp_path: Path, jsonl_path: Path) -> Path:
     return audio_dir
 
 
-def test_load_voice_golden_cases_reads_all_five_from_the_real_golden_set(tmp_path: Path) -> None:
+def _write_fake_ffmpeg(tmp_path: Path, script: str) -> str:
+    """Mirrors `tests/unit/test_audio.py::_write_fake_ffmpeg` — kept as its
+    own small copy here rather than a shared import, matching this file's
+    own precedent (`_stub_audio_dir` above is likewise local to this
+    module): the two suites are free to evolve their fake ffmpeg scripts
+    independently, and a six-line shell-script writer is not worth a shared
+    abstraction between them.
+    """
+    path = tmp_path / "fake-ffmpeg"
+    path.write_text(f"#!/bin/sh\n{script}\n", encoding="utf-8")
+    path.chmod(path.stat().st_mode | stat.S_IEXEC)
+    return str(path)
+
+
+async def test_load_voice_golden_cases_reads_all_five_from_the_real_golden_set(
+    tmp_path: Path,
+) -> None:
     audio_dir = _stub_audio_dir(tmp_path, _VOICE_GOLDEN_PATH)
-    cases = load_voice_golden_cases(_VOICE_GOLDEN_PATH, audio_dir=audio_dir)
+    fake_ffmpeg = _write_fake_ffmpeg(tmp_path, "cat")
+    cases = await load_voice_golden_cases(
+        _VOICE_GOLDEN_PATH, audio_dir=audio_dir, ffmpeg_path=fake_ffmpeg
+    )
     assert len(cases) == 5
     assert [case.case_id for case in cases] == [
         "single-01",
@@ -355,40 +384,96 @@ def test_load_voice_golden_cases_reads_all_five_from_the_real_golden_set(tmp_pat
     ]
 
 
-def test_load_voice_golden_cases_parses_amounts_as_decimal_never_float(tmp_path: Path) -> None:
+async def test_load_voice_golden_cases_parses_amounts_as_decimal_never_float(
+    tmp_path: Path,
+) -> None:
     audio_dir = _stub_audio_dir(tmp_path, _VOICE_GOLDEN_PATH)
-    cases = load_voice_golden_cases(_VOICE_GOLDEN_PATH, audio_dir=audio_dir)
+    fake_ffmpeg = _write_fake_ffmpeg(tmp_path, "cat")
+    cases = await load_voice_golden_cases(
+        _VOICE_GOLDEN_PATH, audio_dir=audio_dir, ffmpeg_path=fake_ffmpeg
+    )
     multi = next(case for case in cases if case.case_id == "multi-02")
     assert multi.expected[1].amount == Decimal("200.00")
     assert isinstance(multi.expected[1].amount, Decimal)
 
 
-def test_load_voice_golden_cases_reads_the_audio_filename_and_transcript_substrings(
+async def test_load_voice_golden_cases_reads_the_audio_filename_and_transcript_substrings(
     tmp_path: Path,
 ) -> None:
     audio_dir = _stub_audio_dir(tmp_path, _VOICE_GOLDEN_PATH)
-    cases = load_voice_golden_cases(_VOICE_GOLDEN_PATH, audio_dir=audio_dir)
+    fake_ffmpeg = _write_fake_ffmpeg(tmp_path, "cat")
+    cases = await load_voice_golden_cases(
+        _VOICE_GOLDEN_PATH, audio_dir=audio_dir, ffmpeg_path=fake_ffmpeg
+    )
     single = next(case for case in cases if case.case_id == "single-01")
     assert single.audio_filename == "single-01.oga"
     assert single.expected_transcript_contains == ("хліб", "50")
 
 
-def test_load_voice_golden_cases_encodes_the_actual_audio_bytes_as_base64(tmp_path: Path) -> None:
+# --- the ADR-0014 §7 guarantee: converted exactly as the bot converts, --------
+# --- never a private reimplementation -----------------------------------------
+
+
+def test_scoring_reuses_the_bots_own_convert_to_mp3_function() -> None:
+    """The hard-to-fool half of the pin: identity, not behaviour. A future
+    change that reintroduces a private copy of ffmpeg-shelling logic in
+    `evals/` — even one that behaves identically — fails this assertion
+    immediately, because it would no longer be *this* function object.
+    Behavioural tests below can only ever prove today's callers still call
+    something that converts; this proves it is still the bot's own.
+    """
+    assert convert_to_mp3 is _bot_convert_to_mp3
+
+
+async def test_load_voice_golden_cases_encodes_convert_to_mp3s_output_not_the_raw_file(
+    tmp_path: Path,
+) -> None:
+    """The behavioural half of the pin: a fake `ffmpeg` that transforms its
+    input in a way no real audio file's bytes would already look like (a
+    literal prefix), so this proves conversion actually ran in the real
+    `load_voice_golden_cases` -> `convert_to_mp3` -> subprocess pipeline —
+    not mocked away — rather than merely tolerating a pass-through fake
+    that an accidental no-op "conversion" could also satisfy.
+    """
     audio_dir = tmp_path / "voice"
     audio_dir.mkdir()
-    (audio_dir / "one.oga").write_bytes(b"real-bytes-stand-in")
+    (audio_dir / "one.oga").write_bytes(b"raw-oga-bytes")
     jsonl_path = tmp_path / "cases.jsonl"
     jsonl_path.write_text(
         '{"id": "c1", "audio": "one.oga", "expected": [], "expected_transcript_contains": ["x"]}\n',
         encoding="utf-8",
     )
+    fake_ffmpeg = _write_fake_ffmpeg(tmp_path, "printf 'FAKE-MP3:'; cat")
 
-    cases = load_voice_golden_cases(jsonl_path, audio_dir=audio_dir)
+    cases = await load_voice_golden_cases(jsonl_path, audio_dir=audio_dir, ffmpeg_path=fake_ffmpeg)
 
-    assert base64.b64decode(cases[0].audio_base64) == b"real-bytes-stand-in"
+    decoded = base64.b64decode(cases[0].audio_base64)
+    assert decoded == b"FAKE-MP3:raw-oga-bytes"
+    assert decoded != b"raw-oga-bytes"
 
 
-def test_load_voice_golden_cases_raises_before_returning_when_audio_is_missing(
+async def test_load_voice_golden_cases_raises_audio_fetch_error_when_ffmpeg_fails(
+    tmp_path: Path,
+) -> None:
+    """Never falls back to sending the unconverted bytes — the exact defect
+    this pin exists to keep from coming back. A failed conversion must
+    surface as `AudioFetchError`, same as `adapters.telegram.audio` itself.
+    """
+    audio_dir = tmp_path / "voice"
+    audio_dir.mkdir()
+    (audio_dir / "one.oga").write_bytes(b"raw-oga-bytes")
+    jsonl_path = tmp_path / "cases.jsonl"
+    jsonl_path.write_text(
+        '{"id": "c1", "audio": "one.oga", "expected": [], "expected_transcript_contains": ["x"]}\n',
+        encoding="utf-8",
+    )
+    fake_ffmpeg = _write_fake_ffmpeg(tmp_path, "echo 'boom' >&2; exit 1")
+
+    with pytest.raises(AudioFetchError, match="c1"):
+        await load_voice_golden_cases(jsonl_path, audio_dir=audio_dir, ffmpeg_path=fake_ffmpeg)
+
+
+async def test_load_voice_golden_cases_raises_before_returning_when_audio_is_missing(
     tmp_path: Path,
 ) -> None:
     """The review's own scenario: a partially recorded set (audio/README.md
@@ -407,12 +492,13 @@ def test_load_voice_golden_cases_raises_before_returning_when_audio_is_missing(
         '"expected_transcript_contains": ["x"]}\n',
         encoding="utf-8",
     )
+    fake_ffmpeg = _write_fake_ffmpeg(tmp_path, "cat")
 
     with pytest.raises(FileNotFoundError, match="c2"):
-        load_voice_golden_cases(jsonl_path, audio_dir=audio_dir)
+        await load_voice_golden_cases(jsonl_path, audio_dir=audio_dir, ffmpeg_path=fake_ffmpeg)
 
 
-def test_load_voice_golden_cases_rejects_an_empty_expected_transcript_contains(
+async def test_load_voice_golden_cases_rejects_an_empty_expected_transcript_contains(
     tmp_path: Path,
 ) -> None:
     """`all(...)` over an empty sequence is vacuously `True` — an empty
@@ -427,9 +513,10 @@ def test_load_voice_golden_cases_rejects_an_empty_expected_transcript_contains(
         '{"id": "c1", "audio": "one.oga", "expected": [], "expected_transcript_contains": []}\n',
         encoding="utf-8",
     )
+    fake_ffmpeg = _write_fake_ffmpeg(tmp_path, "cat")
 
     with pytest.raises(ValueError, match="vacuously"):
-        load_voice_golden_cases(jsonl_path, audio_dir=audio_dir)
+        await load_voice_golden_cases(jsonl_path, audio_dir=audio_dir, ffmpeg_path=fake_ffmpeg)
 
 
 def test_score_voice_case_all_exact_when_transcript_and_expenses_match() -> None:

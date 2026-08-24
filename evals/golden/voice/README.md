@@ -20,23 +20,16 @@ download; see `finbot.adapters.telegram.audio`). Recording or pulling a case
 in that same format is what makes it representative of what the bot actually
 receives, not an approximation of it.
 
-**What happens to it next differs by path, and this is worth knowing before
-you hand-label anything:**
-
-- The bot (`finbot.adapters.telegram.audio.fetch_and_convert`) always
-  converts `.oga` to mp3 with `ffmpeg` before sending it to the model —
-  never the original bytes (ADR-0015).
-- `python -m evals.run --modality voice` (`evals/scoring.py`'s
-  `load_voice_golden_cases`) currently does **not** do the same conversion:
-  it reads this directory's `.oga` bytes as-is and sends them to the model
-  labelled `"format": "mp3"` (`finbot.core.extraction.voice.AUDIO_FORMAT`),
-  unconditionally. That is a real gap between what this eval measures and
-  what production actually sends — not something this README can paper
-  over. Keep recording `.oga` here regardless (it is still the correct
-  source format, and fixing the runner is the right side to close the gap
-  on, not this directory); just do not treat a passing voice eval as proof
-  that the exact production audio path was exercised until someone closes
-  that gap in `evals/run.py`.
+**`python -m evals.run --modality voice` converts it exactly as the bot
+does before scoring anything.** Both paths call the same function —
+`finbot.adapters.telegram.audio.convert_to_mp3` — imported directly into
+`evals/scoring.py`'s `load_voice_golden_cases`, never a second
+implementation: the bot converts a real incoming voice note on the drain
+path (ADR-0015), and this runner converts a case's `.oga` file the same way
+before sending it to the model. `--ffmpeg` (see `evals/README.md`) points
+this at a specific binary if the one on `PATH` is not the right one; a
+missing or failing `ffmpeg` fails the run with one clear line rather than
+silently sending unconverted bytes.
 
 ## Producing a set
 

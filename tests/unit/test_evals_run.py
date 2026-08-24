@@ -35,6 +35,7 @@ from evals.scoring import (
     render_table,
 )
 
+from finbot.config import Settings as BotSettings
 from finbot.core.extraction.ports import LlmError
 from finbot.core.money import loads_decimal
 from tests.support.fake_llm import FakeLlmClient
@@ -311,6 +312,25 @@ def test_load_eval_settings_succeeds_from_an_environment_variable(
     assert settings.llm_timeout_seconds == 60
 
 
+def test_eval_settings_ffmpeg_timeout_default_matches_the_bots_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pins "reuse Settings.ffmpeg_timeout_seconds's default so the eval and
+    the bot agree" mechanically: this must read `finbot.config.Settings`'s
+    own field, never a second hand-copied literal `30` that could drift
+    from it silently.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-fake-not-a-real-key")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    settings = load_eval_settings(env_file=tmp_path / "no-such-file.env")
+
+    assert (
+        settings.ffmpeg_timeout_seconds
+        == BotSettings.model_fields["ffmpeg_timeout_seconds"].default
+    )
+
+
 # --- _parse_args -----------------------------------------------------------------
 
 
@@ -345,6 +365,16 @@ def test_parse_args_accepts_modality_voice() -> None:
 def test_parse_args_rejects_an_unknown_modality() -> None:
     with pytest.raises(SystemExit):
         _parse_args(["--models", "a", "--modality", "photo"])
+
+
+def test_parse_args_ffmpeg_defaults_to_resolving_from_path() -> None:
+    args = _parse_args(["--models", "a"])
+    assert args.ffmpeg_path == "ffmpeg"
+
+
+def test_parse_args_accepts_an_explicit_ffmpeg_path() -> None:
+    args = _parse_args(["--models", "a", "--ffmpeg", "/opt/homebrew/bin/ffmpeg"])
+    assert args.ffmpeg_path == "/opt/homebrew/bin/ffmpeg"
 
 
 # --- run_voice_case ----------------------------------------------------------

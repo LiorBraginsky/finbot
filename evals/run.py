@@ -6,6 +6,11 @@ It calls exactly two production modules — `finbot.core.extraction.text`
 `finbot.llm.openrouter` (perform the HTTP call) — the same two Step 2 wired
 into `core.extraction.pipeline`. Nothing here has its own prompt or its own
 parser: an eval with either would measure the harness, not the model.
+`--modality voice` extends this the one place it needs to: golden audio is
+converted with `finbot.adapters.telegram.audio.convert_to_mp3` itself
+(`evals.scoring.load_voice_golden_cases`), never a second implementation —
+the same rule applied to input preparation, not just the request/response
+path (ADR-0014 §7).
 
 Never a gate. Costs real money per call and its results vary between runs —
 see `evals/README.md` and ADR-0014.
@@ -53,10 +58,11 @@ from evals.scoring import (
     score_case,
     score_voice_case,
 )
+from finbot.config import Settings as _BotSettings
 from finbot.core.categories.catalog import CATALOG
 from finbot.core.extraction import voice as voice_extraction
 from finbot.core.extraction.common import ExtractionInvalidError
-from finbot.core.extraction.ports import LlmClient, LlmError
+from finbot.core.extraction.ports import AudioFetchError, LlmClient, LlmError
 from finbot.core.extraction.text import build_request, parse_content, resolve_dates
 from finbot.llm.openrouter import OpenRouterClient
 
@@ -74,6 +80,15 @@ class EvalSettings(BaseSettings):
     """Only what this runner needs from `.env` — never the bot's Telegram or
     database configuration, so `python -m evals.run` works without any of
     that being set.
+
+    `ffmpeg_timeout_seconds` is the one exception to "never the bot's ...
+    configuration" above, and deliberately so: its *default* is read off
+    `finbot.config.Settings` itself (never duplicated as a second literal
+    `30`), because `--modality voice` converts golden audio with the same
+    `ffmpeg` deadline discipline the bot applies on the drain path — see
+    that field's own docstring for why the deadline exists at all. Still
+    independently overridable here, for a machine whose `ffmpeg` is simply
+    slower, without touching the bot's own setting.
     """
 
     model_config = SettingsConfigDict(
@@ -83,6 +98,7 @@ class EvalSettings(BaseSettings):
     openrouter_api_key: SecretStr
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     llm_timeout_seconds: int = 60
+    ffmpeg_timeout_seconds: int = _BotSettings.model_fields["ffmpeg_timeout_seconds"].default
 
 
 class MissingApiKeyError(RuntimeError):
@@ -275,6 +291,14 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         f"(default: {_DEFAULT_VOICE_AUDIO_DIR})",
     )
     parser.add_argument(
+        "--ffmpeg",
+        dest="ffmpeg_path",
+        default="ffmpeg",
+        help="path to the ffmpeg binary `--modality voice` uses to convert golden audio, "
+        "exactly as the bot converts a real voice note before extraction (default: "
+        "resolved from PATH)",
+    )
+    parser.add_argument(
         "--repeats", type=int, default=1, help="calls per case per model (default: 1)"
     )
     parser.add_argument(
@@ -322,11 +346,24 @@ async def main(argv: Sequence[str] | None = None) -> None:
 
     # Loaded before any socket is opened, same discipline as
     # load_eval_settings's own API-key check: a missing golden case's audio
-    # file (evals.scoring.load_voice_golden_cases reads and base64-encodes
-    # every one, eagerly) must fail here, for free, rather than mid-run
-    # after some earlier cases were already billed.
+    # file, or a broken ffmpeg (evals.scoring.load_voice_golden_cases reads,
+    # converts and base64-encodes every one, eagerly) must fail here, for
+    # free, rather than mid-run after some earlier cases were already
+    # billed.
     if args.modality == "voice":
-        voice_cases = load_voice_golden_cases(cases_path, audio_dir=args.audio_dir)
+        try:
+            voice_cases = await load_voice_golden_cases(
+                cases_path,
+                audio_dir=args.audio_dir,
+                ffmpeg_path=args.ffmpeg_path,
+                timeout_seconds=settings.ffmpeg_timeout_seconds,
+            )
+        except AudioFetchError as exc:
+            # One clear line, never the subprocess mechanics inside
+            # convert_to_mp3 as an uncaught traceback — same discipline as
+            # load_eval_settings's own MissingApiKeyError.
+            print(f"failed to prepare golden voice audio: {exc}", file=sys.stderr)  # noqa: T201
+            raise SystemExit(1) from exc
     else:
         cases = load_golden_cases(cases_path)
 

@@ -24,6 +24,13 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+# `as convert_to_mp3` (not a bare import) is deliberate: mypy's strict
+# mode otherwise treats a name imported-and-not-re-exported as private to
+# this module, and load_voice_golden_cases's own identity pin
+# (tests/unit/test_evals_scoring.py) imports this name from here
+# specifically to assert it is still the bot's own function, not a copy.
+from finbot.adapters.telegram.audio import convert_to_mp3 as convert_to_mp3
+from finbot.core.extraction.ports import AudioFetchError
 from finbot.core.extraction.schema import ExtractionResult, VoiceExtractionResult
 
 
@@ -280,12 +287,14 @@ def render_table(results: list[ModelResult]) -> str:
 class VoiceGoldenCase:
     case_id: str
     audio_filename: str
-    # Read and base64-encoded by `load_voice_golden_cases` itself, not by
-    # `evals.run.run_voice_case` per call: reading every case's audio
-    # upfront, before the first `client.complete`, is what makes a missing
-    # file (the exact state the owner is in while still recording samples —
-    # see evals/golden/voice/README.md) a fast, free failure instead of one
-    # discovered mid-run, after some cases have already been billed.
+    # Read, converted to mp3 with the bot's own `convert_to_mp3`, and
+    # base64-encoded by `load_voice_golden_cases` itself, not by `evals.run.
+    # run_voice_case` per call: reading every case's audio upfront, before
+    # the first `client.complete`, is what makes a missing file or a broken
+    # `ffmpeg` (the exact state the owner is in while still recording
+    # samples — see evals/golden/voice/README.md) a fast, free failure
+    # instead of one discovered mid-run, after some cases have already been
+    # billed.
     audio_base64: str
     expected: tuple[ExpectedExpense, ...]
     # A cheap deterministic proxy for "did it hear the words", without a
@@ -338,24 +347,55 @@ class VoiceModelResult:
         return _nearest_rank_percentile(self.latencies_ms, 0.95)
 
 
-def load_voice_golden_cases(path: Path, *, audio_dir: Path) -> list[VoiceGoldenCase]:
+def _read_jsonl_lines(path: Path) -> list[str]:
+    """A plain, synchronous read — kept out of `load_voice_golden_cases`'s
+    own `async def` body for the same reason `evals.run._save_raw` is kept
+    out of `run_case` (ASYNC240): a `pathlib.Path` method blocks the event
+    loop even when nothing else in the function is waiting on I/O yet.
+    """
+    return path.read_text(encoding="utf-8").splitlines()
+
+
+def _read_audio_bytes(audio_path: Path) -> bytes:
+    """Same discipline as `_read_jsonl_lines` above, isolated to its own
+    call so the `FileNotFoundError` it can raise stays exactly where the
+    caller already expects to catch it.
+    """
+    return audio_path.read_bytes()
+
+
+async def load_voice_golden_cases(
+    path: Path, *, audio_dir: Path, ffmpeg_path: str = "ffmpeg", timeout_seconds: int = 30
+) -> list[VoiceGoldenCase]:
     """One JSON object per line, `evals/golden/voice_v1.jsonl`'s own shape:
     `id`, `audio` (a filename read from `audio_dir`, git-ignored — ADR-0009),
     `expected` (identical shape to the text set), and
     `expected_transcript_contains` (a list of substrings, never empty).
 
-    Reads and base64-encodes every case's audio file here, eagerly, for the
-    same reason `load_eval_settings` checks `OPENROUTER_API_KEY` before any
-    HTTP call: with a partial recorded set — the state the owner is in for
-    as long as `evals/golden/voice/README.md` describes recording more — a
-    missing file must fail before the first `client.complete`, not after
-    some earlier cases have already been billed. `read_bytes()` is
-    synchronous I/O; keeping it out of `evals.run`'s `async def run_voice_
-    case` is the same discipline `_save_raw`'s own docstring states for
-    writes.
+    Converts every case's audio with `finbot.adapters.telegram.audio.
+    convert_to_mp3` — the exact function `core.extraction.pipeline` calls
+    for a real incoming voice note, imported directly rather than
+    reimplemented here — before handing it to `voice.build_request`. An
+    eval that skipped this step would send the model raw OGG/Opus labelled
+    `"format": "mp3"` (`core.extraction.voice.AUDIO_FORMAT`), scoring a
+    request production never actually sends (ADR-0014 §7: an eval with its
+    own input preparation measures the harness, not the model, exactly as
+    one with its own prompt or parser would).
+
+    Reads and converts every case's audio file here, eagerly, for the same
+    reason `load_eval_settings` checks `OPENROUTER_API_KEY` before any HTTP
+    call: with a partial recorded set — the state the owner is in for as
+    long as `evals/golden/voice/README.md` describes recording more — a
+    missing file, or a broken `ffmpeg`, must fail before the first
+    `client.complete`, not after some earlier cases have already been
+    billed. `read_bytes()` is synchronous I/O; keeping it out of `evals.
+    run`'s `async def run_voice_case` is the same discipline `_save_raw`'s
+    own docstring states for writes. This function is itself `async def`
+    only because `convert_to_mp3` is — `evals.run.main` awaits it once,
+    not per case.
     """
     cases: list[VoiceGoldenCase] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in _read_jsonl_lines(path):
         stripped = line.strip()
         if not stripped:
             continue
@@ -364,11 +404,21 @@ def load_voice_golden_cases(path: Path, *, audio_dir: Path) -> list[VoiceGoldenC
         audio_filename = payload["audio"]
         audio_path = audio_dir / audio_filename
         try:
-            audio_bytes = audio_path.read_bytes()
+            audio_bytes = _read_audio_bytes(audio_path)
         except FileNotFoundError as exc:
             raise FileNotFoundError(
                 f"{path}: case {case_id!r} needs {audio_path}, which does not exist — "
                 f"see {audio_dir}/README.md for how to produce it"
+            ) from exc
+
+        try:
+            mp3_bytes = await convert_to_mp3(
+                audio_bytes, ffmpeg_path=ffmpeg_path, timeout_seconds=timeout_seconds
+            )
+        except AudioFetchError as exc:
+            raise AudioFetchError(
+                f"{path}: case {case_id!r}'s audio ({audio_path}) failed to convert to mp3 "
+                f"with ffmpeg: {exc}"
             ) from exc
 
         transcript_contains = tuple(payload["expected_transcript_contains"])
@@ -385,7 +435,7 @@ def load_voice_golden_cases(path: Path, *, audio_dir: Path) -> list[VoiceGoldenC
             VoiceGoldenCase(
                 case_id=case_id,
                 audio_filename=audio_filename,
-                audio_base64=base64.b64encode(audio_bytes).decode("ascii"),
+                audio_base64=base64.b64encode(mp3_bytes).decode("ascii"),
                 expected=_parse_expected(payload, path),
                 expected_transcript_contains=transcript_contains,
             )

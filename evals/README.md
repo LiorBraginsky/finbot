@@ -104,7 +104,13 @@ python -m evals.run --modality voice --models google/gemini-2.5-flash
 
 Same production code path, one layer over: `finbot.core.extraction.voice` builds the
 request and parses the response, `finbot.llm.openrouter` performs the call — no repair
-loop here either, for the same reason.
+loop here either, for the same reason. The same discipline extends to input preparation:
+`evals/scoring.py`'s `load_voice_golden_cases` converts each case's audio to mp3 with
+`finbot.adapters.telegram.audio.convert_to_mp3`, the exact function the bot itself calls
+before extraction (ADR-0015) — imported directly, never reimplemented — so this eval
+scores the same request production actually sends, not raw `.oga` bytes mislabelled as
+mp3 (ADR-0014 §7: an eval with its own input preparation measures the harness, not the
+model).
 
 `evals/golden/voice_v1.jsonl` adds two things to the text case shape: `audio` (a filename
 under `evals/golden/voice/`, read relative to `--audio-dir`, default that same directory)
@@ -116,7 +122,10 @@ exists, ADR-0014 §7).
 **The audio files themselves are not in this repository.** `evals/golden/voice/` is
 git-ignored except for its own `README.md`, which explains how to produce them — they are
 the owner's own recordings, and ADR-0009 keeps household audio out of a public repo.
-Running this modality on a fresh clone fails on a missing file until some are recorded.
+Running this modality on a fresh clone fails on a missing file until some are recorded —
+and, the same way, on a missing or failing `ffmpeg` (`--ffmpeg` points at a specific
+binary if the one on `PATH` is not the right one; default: resolved from `PATH`, same as
+the bot).
 
 `transcript_ok` sits alongside the four exact metrics in the printed table; everything
 else — raw counts, never percentages, `mean cost`/`p50`/`p95` — is identical to the text
