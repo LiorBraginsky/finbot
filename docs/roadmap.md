@@ -167,7 +167,7 @@ Three deferrals this stage names rather than actions:
   stage's bank-feed prompt today, guarded only by the model's own `is_transaction_feed`
   flag — a soft signal, not a router. Stage 4 must decide how a photographed receipt and
   a bank-feed screenshot, both `MessageKind.PHOTO`, choose which prompt actually runs.
-- **Stage 5 gains a candidate category.** The spike's screenshots showed `Preply Inc.`
+- **Stage 5 gains a candidate category.** The spike's screenshots showed an education service
   landing in `other` for want of an `education` slot in the thirteen-category catalog.
 - **Stage 6 owns date and amount editing** — already recorded there as a deferral, and
   the only real remedy for this stage's one known-wrong case: a screenshot sent the day
