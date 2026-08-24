@@ -34,6 +34,24 @@ of date.
 
 ---
 
+## 2026-08-24 · stage 2 · lior
+**Did:** ran the voice eval on five real recordings — 2 models x 5 cases x 2 repeats — and set `MODEL_VOICE=google/gemini-3.5-flash-lite`, then deployed Stage 2 (migration `0003`) to the VPS.
+**Hit:** the samples had to be identified before they could be labelled: seven voice notes existed with no record of which phrase was in which, so each was transcribed through the production path first — used for identification only, never as ground truth, which came from the agreed script.
+**Next:** dictate five expenses in one note in the real chat; that, not a green gate, is Stage 2's done-criterion.
+**Open:** five cases saturated the exact metrics again (10/10 for both models); only `transcript_ok` separated them, and it did so in the cheaper model's favour.
+
+| model | schema_ok | count_exact | amount_exact | category_exact | date_exact | transcript_ok | mean cost (USD) | p50 latency (ms) | p95 latency (ms) |
+|---|---|---|---|---|---|---|---|---|---|
+| google/gemini-3.5-flash-lite | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 | 0.000493 | 1050 | 1643 |
+| google/gemini-3.6-flash | 10/10 | 10/10 | 10/10 | 10/10 | 10/10 | 9/10 | 0.001911 | 2876 | 4328 |
+
+**Chosen:** `MODEL_VOICE=google/gemini-3.5-flash-lite` — it won every axis at once, including the one metric that separated the two: the 3.9x-pricier control lost a `transcript_ok` case the cheaper model got right. A voice note costs $0.000493 against text's $0.000276, only 1.8x more; audio pricing was the cost risk ADR-0015 flagged, and it did not materialise.
+
+## Learning notes
+Three things this run taught that the harness could not. First, the eval had been sending raw OGG/Opus bytes labelled `"format": "mp3"` — `ffmpeg` was never invoked outside the bot, so the runner measured a different input than production sends. It was found while writing documentation, not by a test: a worker asked to state in a README that "the runner converts exactly as the bot does" went to check whether that was true. Prose forces a claim to be verified; tests only compare code against code. The fix imports the bot's own `convert_to_mp3` and is pinned by two tests — an identity assertion (a future private reimplementation fails even if it behaves identically) and a behavioural one through a fake `ffmpeg` (an import that is correct but never awaited fails that one). Second, `expected_transcript_contains` must never carry an amount: the speaker says "двісті пʼятдесят" and this model transcribes "250", so asserting on the surface form would fail for a reason unrelated to hearing. That is now a property test — no entry anywhere in the set may contain a digit — rather than a convention. Third, the sample-pulling helper required Postgres access that exists on no machine: the compose file publishes no port (ADR-0002) and the image does not contain `evals/`. It was formally correct and practically unrunnable, which is a class of defect a reality check catches only if it asks "from where, exactly, does this run".
+
+---
+
 ## 2026-08-10 · stage 2 · worker
 **Did:** Stage 2 end to end — voice extraction parallel to text (`core/extraction/voice.py`, a hand-built `VoiceExtractionResult` schema, `extract_voice.v1`, a shared repair loop factored out of `pipeline.py`'s text/voice split), `adapters/telegram/audio.py` (download to memory, `ffmpeg` stdin→stdout, no temp files, always converts — never a try-original fallback), the two voice-only guards (`MODEL_VOICE` unset, over `MAX_VOICE_SECONDS`) and the transcript-after-extraction currency guard, the `🎤 «...»` confirmation line, and `evals/run.py --modality voice` with its own `transcript_ok` metric. Test count 255 -> 329.
 **Hit:** ADR-0004's own Consequences line read as "try the original OGG/Opus first, fall back to `ffmpeg`", which this stage's decisions explicitly contradict (always convert, unconditionally) — wrote ADR-0015 to supersede that line rather than silently deviate from an existing ADR, per `.claude/orchestration.md`'s own escalation rule.

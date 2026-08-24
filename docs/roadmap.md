@@ -99,6 +99,17 @@ Two deferrals from Stage 1 land here, both recorded in ADR-0013 and the journal:
 
 **Done when:** five expenses dictated in one voice note all land correctly.
 
+*2026-08-24: the voice eval ran on five real recordings (2 models x 5 cases x 2 repeats) and
+`MODEL_VOICE=google/gemini-3.5-flash-lite` is chosen and deployed — it took every metric
+at once, and the 3.9x-pricier control lost the only case that separated them. A voice note
+costs $0.000493 against text's $0.000276. Migration `0003` is applied in production. See
+`docs/journal.md`'s top entry for the table and the criterion. **What remains is the
+criterion itself:** five expenses dictated in one note, in the real chat, landing
+correctly. No gate can prove that, and it has not been tried. Two spare Ukrainian takes of
+the Russian case are recorded but unused, and the set saturated on the exact metrics — only
+`transcript_ok` distinguished the two models, so Stage 3 needs harder voice cases before
+accuracy can separate anything again.*
+
 *Software complete: the voice extraction path (`core/extraction/voice.py`, a hand-built
 strict schema carrying `transcript` alongside `expenses`, `extract_voice.v1`), the
 download-to-memory-then-`ffmpeg`-to-mp3 module (`adapters/telegram/audio.py`, no temp
