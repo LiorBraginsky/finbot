@@ -36,6 +36,20 @@ repository**:
   against the resolved repository root, not by trusting `.gitignore` — if it names this
   repository or anything under it.
 
+**Addendum (2026-08-24):** `--message-ids` turned out to name the owner's selection one
+layer away from where it is actually usable — resolving it to a `file_id` needs
+`DATABASE_URL` and network access to Postgres, and this deployment's own compose file
+publishes neither to any machine outside itself (ADR-0002). `--file-ids` is the same
+guarantee one step closer to the wire: a comma-separated list of Telegram `file_id`
+values the owner already has, mutually exclusive with `--message-ids` — exactly one of
+the two is required, never both, never neither, and neither has a bulk or "all" mode.
+Whichever is given, the file it produces is named from an index-like discriminator (the
+message id, or a short hash of the `file_id`), never from the raw `file_id` itself, which
+is a bearer credential good for downloading that exact file from Telegram and does not
+belong in a filename. This is a clarification of what "explicit, owner-named selection"
+means, not a new exception — see the Consequences item below, which already anticipated
+a future variant needing to keep the same two guards.
+
 Everything else ADR-0009 states remains in force: nothing binary is committed, the
 private evaluation set is still a query against Postgres/`expenses`/`corrections`, never
 files, and this script is run by hand, by the owner, one invocation at a time — never on
@@ -61,9 +75,9 @@ downloaded.
   messages where kind = 'voice' order by id desc` — one extra step, in exchange for
   making an accidental bulk export structurally impossible rather than merely
   discouraged.
-- `evals/golden/voice/README.md` documents the two-step flow: find ids, run the script
-  with `--out` pointed outside the repository, then move or rename the wanted files in by
-  hand to match a case in `voice_v1.jsonl`.
+- `evals/golden/voice/README.md` documents the flow: find a `messages.id` or a `file_id`,
+  run the script with `--out` pointed outside the repository, then move or rename the
+  wanted files in by hand to match a case in `voice_v1.jsonl`.
 - Any future variant of this tool — a "list candidate voice messages" companion command,
   for instance — must keep both guards: refuse a path inside the repository, and require
   explicit selection. This ADR's guard is the invariant to preserve, not a detail of the
