@@ -34,6 +34,17 @@ of date.
 
 ---
 
+## 2026-08-24 · stage 2.5 · worker
+**Did:** Stage 2.5 end to end — bank-feed extraction with its own strict schema and calendar resolver, a database-enforced dedup key (migration `0004`), the note-then-confirmation reply with a one-tap delete-all, and `evals/run.py --modality bank` with its own `no_false_expense` gate; extracted `evals/paths.py` so the bank loader and `pull_voice_samples.py` share ADR-0016's repo-path guard instead of two copies. Test count 472 -> 514.
+**Hit:** `no_false_expense` had to be defined independently of row alignment — the positional metrics (`kind_exact`, `date_exact`, ...) all go blind the moment a model miscounts rows, which is exactly when a wrongly recorded row is most dangerous; a multiset comparison of written amounts against allowed ones stays meaningful regardless.
+**Next:** owner copies the spike's screenshots and hand-labels them per `evals/golden/bank/README.md`, runs the eval, sets `MODEL_VISION`, then deploys migration `0004`.
+**Open:** the eval has never been run — no case set exists yet — so Stage 2.5's real done-criterion has not started.
+
+## Learning notes
+Two splits this stage leaned on. First, the model transcribes a date header verbatim and code alone resolves it against the message's own arrival time, cross-checking the header's own printed weekday as a checksum — chosen over asking the model to compute a date outright, because a wrong weekday is a free, deterministic signal that something was misread, while a model-computed date has no such check and cannot be given today's date without also being tempted to reason with it. Second, this stage's golden-set labels had to leave the repository entirely, not just the pixels behind them — unlike the voice set's committed labels, which describe an agreed script the owner deliberately spoke, a bank screenshot's labels describe real household transactions, exactly the data CLAUDE.md rule 4 exists to keep out. The fix generalised rather than duplicated: ADR-0016's `--out` guard, written for one script, became `evals.paths.ensure_outside_repo`, and both `--cases` and `--images-dir` now refuse to resolve inside the tree the same way `--out` always has.
+
+---
+
 ## 2026-08-24 · stage 2 · lior
 **Did:** ran the voice eval on five real recordings — 2 models x 5 cases x 2 repeats — and set `MODEL_VOICE=google/gemini-3.5-flash-lite`, then deployed Stage 2 (migration `0003`) to the VPS.
 **Hit:** the samples had to be identified before they could be labelled: seven voice notes existed with no record of which phrase was in which, so each was transcribed through the production path first — used for identification only, never as ground truth, which came from the agreed script.

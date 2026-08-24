@@ -30,6 +30,16 @@ media/
 evals/golden/voice/*
 !evals/golden/voice/README.md
 
+# --- Stage 2.5 bank golden set (real screenshots + labels, extends --------
+# --- ADR-0016's guard from --out to --cases/--images-dir) ------------------
+# Belt-and-braces beside the *.jpg/*.jpeg/*.png rules above and evals.paths.
+# ensure_outside_repo's own runtime refusal: bank_v1.jsonl's *labels* are
+# real amounts and merchant names, not synthetic content like voice_v1.
+# jsonl's agreed script, so — unlike voice — the case file itself is never
+# committed either. See evals/golden/bank/README.md.
+evals/golden/bank/*
+!evals/golden/bank/README.md
+
 # --- agent / editor local state --------------------------------------------
 .claude/settings.local.json
 .claude/sessions/

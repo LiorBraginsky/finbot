@@ -16,6 +16,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import aiohttp
 import pytest
 from evals.run import (
     _DEFAULT_CASES_PATH,
@@ -23,15 +24,21 @@ from evals.run import (
     MissingApiKeyError,
     _parse_args,
     load_eval_settings,
+    main,
+    run_bank_case,
+    run_bank_model,
     run_case,
     run_model,
     run_voice_case,
 )
 from evals.scoring import (
+    BankGoldenCase,
+    BankRowExpectation,
     ExpectedExpense,
     GoldenCase,
     VoiceGoldenCase,
     load_golden_cases,
+    render_bank_table,
     render_table,
 )
 
@@ -367,6 +374,21 @@ def test_parse_args_rejects_an_unknown_modality() -> None:
         _parse_args(["--models", "a", "--modality", "photo"])
 
 
+def test_parse_args_accepts_modality_bank() -> None:
+    args = _parse_args(["--models", "a", "--modality", "bank"])
+    assert args.modality == "bank"
+
+
+def test_parse_args_images_dir_defaults_to_none() -> None:
+    args = _parse_args(["--models", "a"])
+    assert args.images_dir is None
+
+
+def test_parse_args_accepts_an_explicit_images_dir(tmp_path: Path) -> None:
+    args = _parse_args(["--models", "a", "--modality", "bank", "--images-dir", str(tmp_path)])
+    assert args.images_dir == tmp_path
+
+
 def test_parse_args_ffmpeg_defaults_to_resolving_from_path() -> None:
     args = _parse_args(["--models", "a"])
     assert args.ffmpeg_path == "ffmpeg"
@@ -465,3 +487,206 @@ async def test_run_voice_case_treats_a_transport_error_as_a_failed_case() -> Non
 def test_default_voice_cases_path_points_at_the_committed_voice_golden_set() -> None:
     assert _DEFAULT_VOICE_CASES_PATH.name == "voice_v1.jsonl"
     assert _DEFAULT_VOICE_CASES_PATH.exists()
+
+
+# --- run_bank_case / run_bank_model (docs/plans/stage-2_5-bank-screenshots.md) ---
+
+
+def _bank_case(
+    *,
+    case_id: str = "b1",
+    anchor_date: date = date(2026, 8, 24),
+    rows: tuple[BankRowExpectation, ...] = (),
+) -> BankGoldenCase:
+    return BankGoldenCase(
+        case_id=case_id,
+        image_filename=f"{case_id}.jpeg",
+        image_data_url="data:image/jpeg;base64,irrelevant",
+        anchor_date=anchor_date,
+        is_transaction_feed=True,
+        rows=rows,
+    )
+
+
+async def test_run_bank_case_scores_a_recorded_feed_and_skips_non_expense_rows() -> None:
+    """`bank_feed_ok.json` (tests/fixtures/openrouter/) carries one expense
+    row (Silpo, 320.50) and two non-expense rows (a savings jar, an own-card
+    transfer) — the case's own ground truth agrees, so every metric,
+    including `no_false_expense`, reads clean.
+    """
+    case = _bank_case(
+        rows=(
+            BankRowExpectation(
+                kind="expense",
+                amount=Decimal("320.50"),
+                category="groceries",
+                occurred_offset_days=0,
+                partially_visible=False,
+            ),
+            BankRowExpectation(kind="savings", amount=Decimal("50.00"), partially_visible=False),
+            BankRowExpectation(
+                kind="own_transfer", amount=Decimal("1000.00"), partially_visible=False
+            ),
+        )
+    )
+    client = FakeLlmClient(_fixture("bank_feed_ok"))
+
+    score = await run_bank_case(client, "google/gemini-3.5-flash-lite", case)
+
+    assert score.schema_ok
+    assert score.feed_ok
+    assert score.count_exact
+    assert score.no_false_expense
+    assert score.expense_count_exact
+    assert score.amount_exact
+    assert score.category_exact
+    assert score.cost_usd == Decimal("0.0019")
+
+
+async def test_run_bank_case_sends_only_the_one_model_under_test() -> None:
+    case = _bank_case()
+    client = FakeLlmClient(_fixture("bank_not_a_feed"))
+
+    await run_bank_case(client, "openai/gpt-oss-20b", case)
+
+    assert client.requests[0].models == ("openai/gpt-oss-20b",)
+
+
+async def test_run_bank_case_sends_an_image_url_content_part_with_no_text_part() -> None:
+    case = _bank_case()
+    client = FakeLlmClient(_fixture("bank_not_a_feed"))
+
+    await run_bank_case(client, "m", case)
+
+    sent_content = client.requests[0].messages[-1]["content"]
+    assert sent_content == [
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,irrelevant"}}
+    ]
+
+
+async def test_run_bank_case_treats_invalid_json_content_as_a_failed_case() -> None:
+    case = _bank_case()
+    client = FakeLlmClient(_fixture("invalid_json"))
+
+    score = await run_bank_case(client, "openai/gpt-5.6-luna", case)
+
+    assert not score.schema_ok
+    assert not score.no_false_expense
+    assert score.cost_usd == Decimal("0.0000891")
+
+
+async def test_run_bank_case_treats_a_transport_error_as_a_failed_case_with_no_cost() -> None:
+    case = _bank_case()
+    client = FakeLlmClient(LlmError("boom", raw={"error": "boom"}))
+
+    score = await run_bank_case(client, "m", case)
+
+    assert not score.schema_ok
+    assert score.cost_usd is None
+    assert score.latency_ms is None
+
+
+async def test_run_bank_model_aggregates_across_repeats() -> None:
+    case = _bank_case(
+        rows=(
+            BankRowExpectation(
+                kind="expense",
+                amount=Decimal("320.50"),
+                category="groceries",
+                occurred_offset_days=0,
+                partially_visible=False,
+            ),
+            BankRowExpectation(kind="savings", amount=Decimal("50.00"), partially_visible=False),
+            BankRowExpectation(
+                kind="own_transfer", amount=Decimal("1000.00"), partially_visible=False
+            ),
+        )
+    )
+    body = _fixture("bank_feed_ok")
+    client = FakeLlmClient(body, body)
+
+    result = await run_bank_model(client, "m", [case], repeats=2)
+
+    assert result.total == 2
+    assert result.schema_ok == 2
+    assert result.no_false_expense == 2
+    assert result.costs == (Decimal("0.0019"), Decimal("0.0019"))
+
+    table = render_bank_table([result])
+    assert "m" in table
+    assert "no_false_expense" in table
+    assert "2/2" in table
+    assert "%" not in table
+
+
+async def test_run_bank_case_multi_day_fixture_writes_across_two_dates() -> None:
+    """`bank_multi_day.json` carries two expense rows on different date
+    headers ("Сьогодні"/"Вчора") — a self-consistency check that
+    `score_bank_case` runs the real `bank.plan_writes`/date resolution, not
+    a stand-in.
+    """
+    case = _bank_case(
+        anchor_date=date(2026, 8, 24),
+        rows=(
+            BankRowExpectation(
+                kind="expense",
+                amount=Decimal("75.00"),
+                category="dining_out",
+                occurred_offset_days=0,
+                partially_visible=False,
+            ),
+            BankRowExpectation(
+                kind="expense",
+                amount=Decimal("410.20"),
+                category="groceries",
+                occurred_offset_days=-1,
+                partially_visible=False,
+            ),
+        ),
+    )
+    client = FakeLlmClient(_fixture("bank_multi_day"))
+
+    score = await run_bank_case(client, "m", case)
+
+    assert score.count_exact
+    assert score.date_exact
+    assert score.amount_exact
+    assert score.no_false_expense
+
+
+# --- --modality bank refuses --save-raw before opening a socket -----------
+
+
+async def test_main_refuses_save_raw_for_modality_bank_before_any_socket_opens(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def _explode(*args: object, **kwargs: object) -> None:
+        raise AssertionError("aiohttp.ClientSession must not be constructed")
+
+    monkeypatch.setattr(aiohttp, "ClientSession", _explode)
+    # Deliberately no OPENROUTER_API_KEY either: the --save-raw refusal must
+    # fire before load_eval_settings is even reached.
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    with pytest.raises(SystemExit) as excinfo:
+        await main(
+            [
+                "--models",
+                "m",
+                "--modality",
+                "bank",
+                "--cases",
+                str(tmp_path / "bank_v1.jsonl"),
+                "--images-dir",
+                str(tmp_path),
+                "--save-raw",
+                str(tmp_path / "raw"),
+            ]
+        )
+
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "--save-raw" in err
+    assert "bank" in err

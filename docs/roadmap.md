@@ -130,6 +130,52 @@ it has.*
 
 ---
 
+## 🚧 Stage 2.5 — Bank-app screenshots
+
+- A screenshot of a bank-app transaction feed → vision model → rows classified into
+  `expense` / `income` / `savings` / `own_transfer` / `transfer_out`
+- **Only `expense` rows are written to `expenses`** — the other four are shown, never
+  stored (vision.md excludes income, savings and transfers; ADR-0006 gains no fourth table)
+- The model transcribes each row's date header verbatim; code resolves it against the
+  message's own arrival time and cross-checks the header's own weekday as a checksum —
+  the model is never told today's date
+- A database-enforced dedup key (`date | time | amount`, merchant deliberately excluded)
+  makes re-sending the same or an overlapping screenshot a no-op
+- A two-message reply (a note, then the usual confirmation) so a bank-specific summary
+  survives the confirmation buttons being tapped, plus a one-tap "delete all" for a batch
+  above the 12-row keyboard cap
+
+**Done when:** one day's screenshot lands as the right expenses, with savings, transfers
+and incoming money visibly skipped rather than silently dropped, and re-sending the same
+screenshot records nothing new — **no gate can prove this, and it has not been tried.**
+
+*Software complete: bank-feed extraction (`core/extraction/bank.py`, its own hand-built
+strict schema, `extract_bank.v1`), the date resolver with its own exhaustive table-driven
+test (`bank_dates.py` — the model reads the header, code owns the calendar), the
+`bank_txn_key` unique constraint (migration `0004`) and the manual-collision probe it
+enables, the note-then-confirmation reply with the delete-all keyboard row, and
+`evals/run.py --modality bank` with its own pre-registered `no_false_expense` gate are
+all built and covered by `pytest`. **What remains is not software:** the owner builds the
+private case set (`evals/golden/bank/README.md` — the labels are as private as the
+pixels, so neither is committed), runs the eval, sets `MODEL_VISION`, deploys migration
+`0004`, and then the stage's actual done-criterion above, which no gate can prove and has
+not started yet.*
+
+Three deferrals this stage names rather than actions:
+
+- **Stage 4 inherits a photo-disambiguation debt.** Every incoming photo runs this
+  stage's bank-feed prompt today, guarded only by the model's own `is_transaction_feed`
+  flag — a soft signal, not a router. Stage 4 must decide how a photographed receipt and
+  a bank-feed screenshot, both `MessageKind.PHOTO`, choose which prompt actually runs.
+- **Stage 5 gains a candidate category.** The spike's screenshots showed `Preply Inc.`
+  landing in `other` for want of an `education` slot in the thirteen-category catalog.
+- **Stage 6 owns date and amount editing** — already recorded there as a deferral, and
+  the only real remedy for this stage's one known-wrong case: a screenshot sent the day
+  after it was taken resolves `Сьогодні`/`Вчора` against the wrong arrival time and lands
+  a day late, today correctable only by 🗑 and retyping the whole expense by hand.
+
+---
+
 ## ⬜ Stage 3 — Evaluation harness
 
 - Metrics: `amount_exact`, `count_exact`, `category_exact`, `date_exact`,

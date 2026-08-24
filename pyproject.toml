@@ -89,6 +89,11 @@ ignore = ["S104"]
 # Asserts the exact Cyrillic date headers finbot.core.extraction.bank_dates
 # resolves and rejects.
 "tests/unit/test_bank_dates.py" = ["RUF001"]
+# Bank-feed date headers in both the model-output fixtures and the
+# docstrings explaining what they test (a weekday-mismatch case quotes
+# "сб"/"пт" in prose), same justification as bank_dates.py above, extended
+# to RUF002 for the same reason as currency.py.
+"tests/unit/test_evals_bank_scoring.py" = ["RUF001", "RUF002"]
 # BOT_COMMANDS' descriptions are the exact Ukrainian text Telegram shows in
 # the command menu, same justification as the catalog above.
 "src/finbot/adapters/telegram/main.py" = ["RUF001"]

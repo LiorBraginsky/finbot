@@ -18,11 +18,14 @@ from __future__ import annotations
 import base64
 import json
 import math
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+
+from evals.paths import ensure_outside_repo
 
 # `as convert_to_mp3` (not a bare import) is deliberate: mypy's strict
 # mode otherwise treats a name imported-and-not-re-exported as private to
@@ -30,8 +33,22 @@ from typing import Any
 # (tests/unit/test_evals_scoring.py) imports this name from here
 # specifically to assert it is still the bot's own function, not a copy.
 from finbot.adapters.telegram.audio import convert_to_mp3 as convert_to_mp3
-from finbot.core.extraction.ports import AudioFetchError
-from finbot.core.extraction.schema import ExtractionResult, VoiceExtractionResult
+
+# Same reasoning, applied to the bank modality (Stage 2.5): `to_data_url` is
+# the exact function `core.extraction.bank.build_request`'s caller uses to
+# turn a real incoming photo into the data URL the request carries, imported
+# directly rather than reimplemented — `test_evals_bank.py`'s identity pin
+# checks this name is still that function, not a copy.
+from finbot.adapters.telegram.images import to_data_url as to_data_url
+from finbot.core.extraction import bank, bank_dates
+from finbot.core.extraction.ports import AudioFetchError, ImageFetchError
+from finbot.core.extraction.schema import (
+    BankExtractionResult,
+    BankRow,
+    BankRowKind,
+    ExtractionResult,
+    VoiceExtractionResult,
+)
 
 
 @dataclass(frozen=True)
@@ -551,6 +568,370 @@ def render_voice_table(results: list[VoiceModelResult]) -> str:
             f"| {result.category_exact}/{result.total} "
             f"| {result.date_exact}/{result.total} "
             f"| {result.transcript_ok}/{result.total} "
+            f"| {cost} "
+            f"| {result.latency_p50_ms} "
+            f"| {result.latency_p95_ms} |"
+        )
+    return "\n".join(rows)
+
+
+# --- bank screenshots (docs/plans/stage-2_5-bank-screenshots.md) --------------
+#
+# A third parallel set of hand-maintained shapes — same reasoning as the
+# voice section above, and Approach F's own reasoning for why the case file
+# itself is never one of them: `evals/golden/bank/README.md` documents the
+# format, but `bank_v1.jsonl` and the screenshots it labels live outside
+# this repository, loaded only through `load_bank_golden_cases` below.
+
+
+@dataclass(frozen=True)
+class BankRowExpectation:
+    """One hand-labelled row of `evals/golden/bank/README.md`'s case format.
+
+    `category` and `occurred_offset_days` are only ever written for a
+    `kind == "expense"` row — the format's own convention, mirrored here as
+    `None` for every other kind. Every metric below that reads either field
+    treats `None` as "not applicable to this row", never as a miss: judging
+    a savings row's category would be judging something the row never had.
+    """
+
+    kind: str
+    amount: Decimal
+    partially_visible: bool
+    category: str | None = None
+    occurred_offset_days: int | None = None
+
+
+@dataclass(frozen=True)
+class BankGoldenCase:
+    case_id: str
+    image_filename: str
+    # Read, sniffed and base64-encoded eagerly by `load_bank_golden_cases`,
+    # through `finbot.adapters.telegram.images.to_data_url` itself — see
+    # that import's own note above. Eager for the same reason `load_voice_
+    # golden_cases` converts every case's audio upfront: a missing file or
+    # an unrecognised image format must fail here, before the first
+    # `client.complete`, not mid-run after earlier cases are already billed.
+    image_data_url: str
+    anchor_date: date
+    is_transaction_feed: bool
+    rows: tuple[BankRowExpectation, ...]
+
+
+@dataclass(frozen=True)
+class BankCaseScore:
+    case_id: str
+    schema_ok: bool
+    feed_ok: bool
+    count_exact: bool
+    kind_exact: bool
+    dropped_exact: bool
+    category_exact: bool
+    date_exact: bool
+    expense_count_exact: bool
+    amount_exact: bool
+    # The gate this stage exists for (docs/plans/stage-2_5-bank-
+    # screenshots.md, "The metric this step exists for"): deliberately
+    # asymmetric, and scoreable even when count_exact does not hold — see
+    # score_bank_case's own docstring.
+    no_false_expense: bool
+    cost_usd: Decimal | None
+    latency_ms: int | None
+
+
+@dataclass(frozen=True)
+class BankModelResult:
+    model: str
+    total: int
+    schema_ok: int
+    feed_ok: int
+    count_exact: int
+    kind_exact: int
+    dropped_exact: int
+    category_exact: int
+    date_exact: int
+    expense_count_exact: int
+    amount_exact: int
+    no_false_expense: int
+    costs: tuple[Decimal, ...]
+    latencies_ms: tuple[int, ...]
+
+    @property
+    def cost_mean(self) -> Decimal | None:
+        if not self.costs:
+            return None
+        return sum(self.costs, Decimal("0")) / len(self.costs)
+
+    @property
+    def latency_p50_ms(self) -> int:
+        return _nearest_rank_percentile(self.latencies_ms, 0.50)
+
+    @property
+    def latency_p95_ms(self) -> int:
+        return _nearest_rank_percentile(self.latencies_ms, 0.95)
+
+
+def _read_image_bytes(image_path: Path) -> bytes:
+    """Same discipline as `_read_audio_bytes` above, isolated to its own
+    call so the `FileNotFoundError` it can raise stays exactly where the
+    caller already expects to catch it.
+    """
+    return image_path.read_bytes()
+
+
+def _parse_bank_row(row: dict[str, Any], *, case_id: str, path: Path) -> BankRowExpectation:
+    amount = row["amount"]
+    if not isinstance(amount, str):
+        msg = (
+            f"{path}: golden case {case_id!r} row amount must be a JSON string, "
+            f"never a bare number, got {amount!r}"
+        )
+        raise TypeError(msg)
+    return BankRowExpectation(
+        kind=row["kind"],
+        amount=Decimal(amount),
+        partially_visible=bool(row["partially_visible"]),
+        category=row.get("category"),
+        occurred_offset_days=(
+            int(row["occurred_offset_days"]) if "occurred_offset_days" in row else None
+        ),
+    )
+
+
+def load_bank_golden_cases(path: Path, *, images_dir: Path) -> list[BankGoldenCase]:
+    """One JSON object per line, `evals/golden/bank/README.md`'s own shape:
+    `id`, `image` (a filename read from `images_dir`), `anchor_date`
+    (**absolute**, ISO-8601 — the one place this stage diverges from the
+    committed sets' run-date-relative rule, since a screenshot's headers are
+    baked into its pixels; `--today` does not apply to `--modality bank`),
+    `is_transaction_feed`, and `rows` (every visible row, in feed order,
+    `evals.scoring.BankRowExpectation`'s own shape).
+
+    **Both `path` and `images_dir` must resolve outside this repository** —
+    `evals.paths.ensure_outside_repo`, the same ADR-0016 invariant
+    `pull_voice_samples.py`'s `--out` enforces, applied here to a bank
+    golden set's cases file and its image directory, because the label is
+    exactly as private as the pixels (docs/plans/stage-2_5-bank-
+    screenshots.md, Approach F).
+
+    Reads and encodes every case's image here, eagerly, for the same reason
+    `load_voice_golden_cases` converts every case's audio eagerly: a missing
+    file, or an image that does not sniff as jpeg/png/webp, must fail before
+    the first `client.complete`, not after some earlier cases have already
+    been billed.
+    """
+    ensure_outside_repo(path, flag="--cases")
+    ensure_outside_repo(images_dir, flag="--images-dir")
+
+    cases: list[BankGoldenCase] = []
+    for line in _read_jsonl_lines(path):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        payload: dict[str, Any] = json.loads(stripped, parse_float=Decimal)
+        case_id = payload["id"]
+        image_filename = payload["image"]
+        image_path = images_dir / image_filename
+        try:
+            image_bytes = _read_image_bytes(image_path)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(
+                f"{path}: case {case_id!r} needs {image_path}, which does not exist — "
+                f"see {images_dir}/README.md for the case format"
+            ) from exc
+
+        try:
+            image_data_url = to_data_url(image_bytes)
+        except ImageFetchError as exc:
+            raise ImageFetchError(
+                f"{path}: case {case_id!r}'s image ({image_path}) does not sniff as a "
+                f"supported format (jpeg/png/webp): {exc}"
+            ) from exc
+
+        rows = tuple(_parse_bank_row(row, case_id=case_id, path=path) for row in payload["rows"])
+        cases.append(
+            BankGoldenCase(
+                case_id=case_id,
+                image_filename=image_filename,
+                image_data_url=image_data_url,
+                anchor_date=date.fromisoformat(payload["anchor_date"]),
+                is_transaction_feed=bool(payload["is_transaction_feed"]),
+                rows=rows,
+            )
+        )
+    return cases
+
+
+def _bank_row_would_write(row: BankRow, *, anchor: date) -> bool:
+    """Whether `bank.plan_writes` would write this single row — the
+    production classifier itself, called on a synthetic one-row result,
+    never a second copy of its rules (ADR-0014 §7): the write decision that
+    matters is always `bank.plan_writes`'s own.
+    """
+    single = BankExtractionResult(is_transaction_feed=True, rows=[row])
+    return bool(bank.plan_writes(single, anchor=anchor).writes)
+
+
+def score_bank_case(
+    case: BankGoldenCase,
+    result: BankExtractionResult,
+    *,
+    cost_usd: Decimal | None,
+    latency_ms: int,
+) -> BankCaseScore:
+    """Score one already-parsed bank-extraction response against its case.
+
+    `no_false_expense` — the metric this stage exists for — is **set-based
+    and deliberately asymmetric**, computed independently of every
+    positional metric below it: every amount `bank.plan_writes` would
+    actually *write* must appear, with multiplicity, among this case's own
+    `expense`-kind, fully-visible row amounts. `Counter.__le__` is exactly
+    multiset inclusion, so `written <= allowed` is true when nothing was
+    written that should not have been (the model may still *miss* an
+    expense — `written` is then a strict subset — which is the named
+    asymmetry: a missed expense is a nuisance, an over-written one destroys
+    a report). Because it never zips model rows against case rows, it stays
+    meaningful even when `count_exact` does not hold, which is exactly when
+    every positional metric below goes blind.
+
+    Every other metric is positional, gated on `count_exact` — mirroring
+    `score_case`'s own docstring — except `feed_ok` (a single top-level
+    field) and `expense_count_exact` (a total, not a pairing, so a miscount
+    still gets a total-count signal `count_exact` cannot give it).
+    `category_exact`/`date_exact`/`dropped_exact` are further scoped to
+    rows this case actually labelled `expense`: category and date are
+    meaningless for the other four kinds, and `dropped_exact` — "was a
+    cut-off row correctly left unwritten" — has nothing to say about a row
+    that was never going to be written anyway.
+    """
+    feed_ok = result.is_transaction_feed == case.is_transaction_feed
+
+    plan = bank.plan_writes(result, anchor=case.anchor_date)
+    expected_expense_rows = [
+        row
+        for row in case.rows
+        if row.kind == BankRowKind.EXPENSE.value and not row.partially_visible
+    ]
+    expense_count_exact = len(plan.writes) == len(expected_expense_rows)
+
+    allowed_amounts = Counter(row.amount for row in expected_expense_rows)
+    written_amounts = Counter(write.draft.amount for write in plan.writes)
+    no_false_expense = written_amounts <= allowed_amounts
+
+    count_exact = len(result.rows) == len(case.rows)
+    if count_exact:
+        pairs = list(zip(result.rows, case.rows, strict=True))
+        amount_exact = all(actual.amount == expected.amount for actual, expected in pairs)
+        kind_exact = all(actual.kind.value == expected.kind for actual, expected in pairs)
+        category_exact = all(
+            expected.category is None or actual.category == expected.category
+            for actual, expected in pairs
+            if expected.kind == BankRowKind.EXPENSE.value
+        )
+        date_exact = all(
+            expected.occurred_offset_days is None
+            or bank_dates.resolve(actual.date_header, anchor=case.anchor_date)
+            == case.anchor_date + timedelta(days=expected.occurred_offset_days)
+            for actual, expected in pairs
+            if expected.kind == BankRowKind.EXPENSE.value
+        )
+        dropped_exact = all(
+            _bank_row_would_write(actual, anchor=case.anchor_date)
+            == (not expected.partially_visible)
+            for actual, expected in pairs
+            if expected.kind == BankRowKind.EXPENSE.value
+        )
+    else:
+        amount_exact = kind_exact = category_exact = date_exact = dropped_exact = False
+
+    return BankCaseScore(
+        case_id=case.case_id,
+        schema_ok=True,
+        feed_ok=feed_ok,
+        count_exact=count_exact,
+        kind_exact=kind_exact,
+        dropped_exact=dropped_exact,
+        category_exact=category_exact,
+        date_exact=date_exact,
+        expense_count_exact=expense_count_exact,
+        amount_exact=amount_exact,
+        no_false_expense=no_false_expense,
+        cost_usd=cost_usd,
+        latency_ms=latency_ms,
+    )
+
+
+def failed_bank_case_score(
+    case_id: str, *, cost_usd: Decimal | None, latency_ms: int | None
+) -> BankCaseScore:
+    """Mirrors `failed_case_score`: the response never became a usable
+    `BankExtractionResult`, so every metric — `no_false_expense` included —
+    is a miss. Nothing was ever classified, so there is nothing to trust.
+    """
+    return BankCaseScore(
+        case_id=case_id,
+        schema_ok=False,
+        feed_ok=False,
+        count_exact=False,
+        kind_exact=False,
+        dropped_exact=False,
+        category_exact=False,
+        date_exact=False,
+        expense_count_exact=False,
+        amount_exact=False,
+        no_false_expense=False,
+        cost_usd=cost_usd,
+        latency_ms=latency_ms,
+    )
+
+
+def aggregate_bank(model: str, scores: list[BankCaseScore]) -> BankModelResult:
+    return BankModelResult(
+        model=model,
+        total=len(scores),
+        schema_ok=sum(score.schema_ok for score in scores),
+        feed_ok=sum(score.feed_ok for score in scores),
+        count_exact=sum(score.count_exact for score in scores),
+        kind_exact=sum(score.kind_exact for score in scores),
+        dropped_exact=sum(score.dropped_exact for score in scores),
+        category_exact=sum(score.category_exact for score in scores),
+        date_exact=sum(score.date_exact for score in scores),
+        expense_count_exact=sum(score.expense_count_exact for score in scores),
+        amount_exact=sum(score.amount_exact for score in scores),
+        no_false_expense=sum(score.no_false_expense for score in scores),
+        costs=tuple(score.cost_usd for score in scores if score.cost_usd is not None),
+        latencies_ms=tuple(score.latency_ms for score in scores if score.latency_ms is not None),
+    )
+
+
+def render_bank_table(results: list[BankModelResult]) -> str:
+    """Mirrors `render_table`/`render_voice_table`: raw counts, never
+    percentages. `no_false_expense` sits first among the accuracy columns,
+    not last — Gate 1 (docs/plans/stage-2_5-bank-screenshots.md, Owner
+    prerequisite 3) is read off this column before any other, and a model
+    failing it is disqualified regardless of everything to its right.
+    """
+    header = (
+        "| model | schema_ok | no_false_expense | feed_ok | count_exact | kind_exact "
+        "| dropped_exact | expense_count_exact | amount_exact | category_exact "
+        "| date_exact | mean cost (USD) | p50 latency (ms) | p95 latency (ms) |"
+    )
+    separator = "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
+    rows = [header, separator]
+    for result in results:
+        cost = f"{result.cost_mean:.6f}" if result.cost_mean is not None else "n/a"
+        rows.append(
+            f"| {result.model} "
+            f"| {result.schema_ok}/{result.total} "
+            f"| {result.no_false_expense}/{result.total} "
+            f"| {result.feed_ok}/{result.total} "
+            f"| {result.count_exact}/{result.total} "
+            f"| {result.kind_exact}/{result.total} "
+            f"| {result.dropped_exact}/{result.total} "
+            f"| {result.expense_count_exact}/{result.total} "
+            f"| {result.amount_exact}/{result.total} "
+            f"| {result.category_exact}/{result.total} "
+            f"| {result.date_exact}/{result.total} "
             f"| {cost} "
             f"| {result.latency_p50_ms} "
             f"| {result.latency_p95_ms} |"
