@@ -21,11 +21,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from finbot.adapters.telegram.main import build_dispatcher
-from finbot.adapters.telegram.render import (
-    EMPTY_REPORT_REPLY,
-    HELP_TEXT,
-    UNSUPPORTED_MODALITY_REPLY,
-)
+from finbot.adapters.telegram.render import EMPTY_REPORT_REPLY, HELP_TEXT
 from finbot.core.models import MessageKind, MessageStatus
 from finbot.repo.models import Message, User
 from tests.support.fake_session import FakeSession
@@ -195,12 +191,17 @@ async def test_voice_message_stores_file_id_and_is_pending(
     assert cast(FakeSession, bot.session).requests == []
 
 
-async def test_photo_message_still_gets_the_unsupported_modality_reply(
+async def test_photo_message_is_pending_and_gets_no_inline_reply(
     dispatcher: Dispatcher, bot: Bot, db_session: AsyncSession
 ) -> None:
-    """Photo keeps its Stage-1 behaviour until Stage 4: SKIPPED, and an
-    immediate inline reply — the `F.voice` half of that handler is what left
-    (docs/roadmap.md Stage 2), not the `F.photo` half.
+    """The regression test for Reality check #1
+    (docs/plans/stage-2_5-bank-screenshots.md): a photo used to be SKIPPED
+    with an immediate inline `UNSUPPORTED_MODALITY_REPLY`
+    (`handlers.py`'s now-removed `@router.message(F.photo)`); from Stage 2.5
+    it is PENDING, like text and voice, and answered only later by the
+    drain loop (`tests/integration/test_bank_flow.py`) — never both, which
+    is exactly what shipping the `_initial_status` flip without removing
+    that handler would have produced.
     """
     update = photo_update(update_id=4501, file_id="photo-file-id")
 
@@ -208,11 +209,9 @@ async def test_photo_message_still_gets_the_unsupported_modality_reply(
 
     row = (await db_session.execute(select(Message))).scalar_one()
     assert row.kind == MessageKind.PHOTO
-    assert row.status == MessageStatus.SKIPPED
+    assert row.status == MessageStatus.PENDING
 
-    sent = [r for r in cast(FakeSession, bot.session).requests if isinstance(r, SendMessage)]
-    assert len(sent) == 1
-    assert sent[0].text == UNSUPPORTED_MODALITY_REPLY
+    assert cast(FakeSession, bot.session).requests == []
 
 
 async def test_unsupported_content_is_not_persisted(

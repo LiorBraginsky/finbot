@@ -25,20 +25,23 @@ from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from finbot.adapters.telegram.audio import fetch_and_convert
+from finbot.adapters.telegram.images import fetch_as_data_url
 from finbot.adapters.telegram.keyboards import confirmation_keyboard
 from finbot.adapters.telegram.render import (
     FOREIGN_CURRENCY_REPLY,
     NO_EXPENSE_REPLY,
     PROCESSING_FAILED_REPLY,
+    VISION_NOT_CONFIGURED_REPLY,
     VOICE_NOT_CONFIGURED_REPLY,
     ConfirmationLine,
+    render_bank_note,
     render_confirmation,
     transcript_line,
     voice_too_long_reply,
 )
 from finbot.config import Settings
 from finbot.core.categories.catalog import CATALOG
-from finbot.core.extraction.pipeline import backoff_seconds, extract_and_store
+from finbot.core.extraction.pipeline import ExtractionOutcome, backoff_seconds, extract_and_store
 from finbot.core.extraction.ports import LlmClient
 from finbot.core.extraction.schema import ExpenseDraft
 from finbot.core.models import ExtractionStatus, MessageKind, MessageStatus
@@ -87,6 +90,54 @@ def _fetch_audio_for(
     return partial(fetch_and_convert, bot, message.file_id, timeout_seconds=ffmpeg_timeout_seconds)
 
 
+def _fetch_image_for(bot: Bot, message: Message) -> Callable[[], Awaitable[str]]:
+    """Binds `adapters.telegram.images.fetch_as_data_url` to this message's
+    `bot`/`file_id` — mirrors `_fetch_audio_for` exactly, for the seam
+    `core.extraction.pipeline` expects (its own `fetch_image` parameter,
+    never imported directly — CLAUDE.md rule 3).
+    """
+    if message.file_id is None:
+        raise ValueError(f"photo message {message.id} has no file_id")
+    return partial(fetch_as_data_url, bot, message.file_id)
+
+
+async def _send_bank_reply(
+    *, session: AsyncSession, message: Message, outcome: ExtractionOutcome, bot: Bot
+) -> None:
+    """The bank-feed reply (docs/plans/stage-2_5-bank-screenshots.md, Step 3,
+    Approach D2): the note first, always — sent once and never edited again,
+    which is what lets it carry a summary `handlers._rerender_group` could
+    never preserve (Reality check #2) — then the confirmation, sent only
+    when at least one row was actually written (`outcome.expense_ids`).
+
+    `set_bot_message_id` is stamped from the **confirmation**'s message id,
+    never the note's: `bot_message_id` exists so a ✏️/🗑 button knows which
+    rows it controls (ADR-0007), and the note carries no buttons at all.
+    `delete_all_message_id=message.id` (the internal `messages` row, not a
+    Telegram message id) is what lets `🗑 Видалити все` and a later
+    `_rerender_group` find every row from this screenshot regardless of how
+    many are still active.
+    """
+    summary = outcome.bank_summary
+    if summary is None:
+        raise AssertionError("_send_bank_reply requires outcome.bank_summary")
+    anchor = summary.plan.anchor
+
+    await bot.send_message(chat_id=message.chat_id, text=render_bank_note(summary, anchor=anchor))
+
+    if not outcome.expense_ids:
+        return
+
+    lines = _confirmation_lines(outcome.expense_ids, outcome.drafts, today=anchor)
+    sent = await bot.send_message(
+        chat_id=message.chat_id,
+        text=render_confirmation(lines, today=anchor),
+        reply_markup=confirmation_keyboard(lines, delete_all_message_id=message.id),
+    )
+    await expenses.set_bot_message_id(session, outcome.expense_ids, sent.message_id)
+    await session.commit()
+
+
 async def _process_claimed(
     *,
     session: AsyncSession,
@@ -107,12 +158,25 @@ async def _process_claimed(
     today = datetime.now(tz=settings.tz).date()
 
     is_voice = message.kind == MessageKind.VOICE
-    models = settings.voice_model_candidates if is_voice else settings.model_candidates
+    is_photo = message.kind == MessageKind.PHOTO
+    if is_voice:
+        models = settings.voice_model_candidates
+    elif is_photo:
+        models = settings.vision_model_candidates
+    else:
+        models = settings.model_candidates
     fetch_audio = (
         _fetch_audio_for(bot, message, ffmpeg_timeout_seconds=settings.ffmpeg_timeout_seconds)
         if is_voice
         else None
     )
+    fetch_image = _fetch_image_for(bot, message) if is_photo else None
+    # message.created_at, not `today` (Approach B, the arrival anchor): a
+    # bank screenshot's relative date headers ("Сьогодні"/"Вчора") mean
+    # relative to when the photo *arrived*, not to whenever the drain loop
+    # happens to claim it — the two can differ by the retry backoff, or by
+    # however long the message sat pending.
+    anchor_date = message.created_at.astimezone(settings.tz).date() if is_photo else None
 
     outcome = await extract_and_store(
         session=session,
@@ -126,6 +190,8 @@ async def _process_claimed(
         max_message_attempts=settings.max_message_attempts,
         max_voice_seconds=settings.max_voice_seconds,
         fetch_audio=fetch_audio,
+        fetch_image=fetch_image,
+        anchor_date=anchor_date,
     )
 
     if outcome.voice_not_configured:
@@ -138,6 +204,10 @@ async def _process_claimed(
         )
         return
 
+    if outcome.vision_not_configured:
+        await bot.send_message(chat_id=message.chat_id, text=VISION_NOT_CONFIGURED_REPLY)
+        return
+
     if outcome.foreign_currency:
         # extract_and_store already marked the message 'skipped' with
         # last_error set (core/extraction/currency.py) and, for text, never
@@ -147,6 +217,10 @@ async def _process_claimed(
         return
 
     if outcome.status == ExtractionStatus.OK:
+        if outcome.bank_summary is not None:
+            await _send_bank_reply(session=session, message=message, outcome=outcome, bot=bot)
+            return
+
         if outcome.asked_for_clarification:
             reply = NO_EXPENSE_REPLY
             if outcome.transcript is not None:
