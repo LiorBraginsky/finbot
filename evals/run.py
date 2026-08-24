@@ -10,7 +10,13 @@ parser: an eval with either would measure the harness, not the model.
 converted with `finbot.adapters.telegram.audio.convert_to_mp3` itself
 (`evals.scoring.load_voice_golden_cases`), never a second implementation —
 the same rule applied to input preparation, not just the request/response
-path (ADR-0014 §7).
+path (ADR-0014 §7). `--modality bank` (docs/plans/stage-2_5-bank-
+screenshots.md) extends it once more: `--cases`/`--images-dir` are required,
+with no default, and refused when they resolve inside this repository
+(`evals.paths.ensure_outside_repo`) — the case labels are real household
+screenshots, as private as the pixels (Approach F) — and `--save-raw` is
+refused outright for this modality, since there are no synthetic bank cases
+to refresh a fixture from (ADR-0012's Stage-1 amendment).
 
 Never a gate. Costs real money per call and its results vary between runs —
 see `evals/README.md` and ADR-0014.
@@ -41,6 +47,9 @@ from pydantic import SecretStr, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from evals.scoring import (
+    BankCaseScore,
+    BankGoldenCase,
+    BankModelResult,
     CaseScore,
     GoldenCase,
     ModelResult,
@@ -48,21 +57,27 @@ from evals.scoring import (
     VoiceGoldenCase,
     VoiceModelResult,
     aggregate,
+    aggregate_bank,
     aggregate_voice,
+    failed_bank_case_score,
     failed_case_score,
     failed_voice_case_score,
+    load_bank_golden_cases,
     load_golden_cases,
     load_voice_golden_cases,
+    render_bank_table,
     render_table,
     render_voice_table,
+    score_bank_case,
     score_case,
     score_voice_case,
 )
 from finbot.config import Settings as _BotSettings
 from finbot.core.categories.catalog import CATALOG
+from finbot.core.extraction import bank as bank_extraction
 from finbot.core.extraction import voice as voice_extraction
 from finbot.core.extraction.common import ExtractionInvalidError
-from finbot.core.extraction.ports import AudioFetchError, LlmClient, LlmError
+from finbot.core.extraction.ports import AudioFetchError, ImageFetchError, LlmClient, LlmError
 from finbot.core.extraction.text import build_request, parse_content, resolve_dates
 from finbot.llm.openrouter import OpenRouterClient
 
@@ -74,6 +89,13 @@ _DEFAULT_VOICE_AUDIO_DIR = Path(__file__).parent / "golden" / "voice"
 # Matches adapters/telegram/main.py's own default: "today" for date-offset
 # cases is a Kyiv-local calendar date, not a UTC one.
 _DEFAULT_TZ = ZoneInfo("Europe/Kyiv")
+
+# Errors `load_bank_golden_cases` can raise while preparing a case, all
+# meant to fail the run with one clear line rather than a raw traceback —
+# `RepoPathError` is a `ValueError` subclass (evals.paths), so catching
+# `ValueError` also covers it, a missing `anchor_date`/`rows` key raises
+# `KeyError`, and a malformed `amount` raises `TypeError`.
+_BANK_LOAD_ERRORS = (FileNotFoundError, ImageFetchError, KeyError, TypeError, ValueError)
 
 
 class EvalSettings(BaseSettings):
@@ -260,6 +282,49 @@ async def run_voice_model(
     return aggregate_voice(model, scores)
 
 
+async def run_bank_case(
+    client: LlmClient,
+    model: str,
+    case: BankGoldenCase,
+) -> BankCaseScore:
+    """Mirrors `run_case`/`run_voice_case` — one call, no repair loop, same
+    reasoning. No `today` parameter: `case.anchor_date` is already absolute
+    (`evals.scoring.load_bank_golden_cases`'s own docstring), and no
+    `save_raw` parameter either — `--modality bank` refuses `--save-raw`
+    outright (`main` below), so there is no code path here that could ever
+    write a real bank response body into `tests/fixtures/openrouter/`.
+    """
+    request = bank_extraction.build_request(
+        image_data_url=case.image_data_url, catalog=CATALOG, models=(model,)
+    )
+    try:
+        response = await client.complete(request)
+    except LlmError as exc:
+        logger.warning("model %s errored on case %s: %s", model, case.case_id, exc)
+        return failed_bank_case_score(case.case_id, cost_usd=exc.cost_usd, latency_ms=None)
+
+    try:
+        result = bank_extraction.parse_content(response.content)
+    except ExtractionInvalidError as exc:
+        logger.warning("model %s produced invalid output on case %s: %s", model, case.case_id, exc)
+        return failed_bank_case_score(
+            case.case_id, cost_usd=response.cost_usd, latency_ms=response.latency_ms
+        )
+
+    return score_bank_case(case, result, cost_usd=response.cost_usd, latency_ms=response.latency_ms)
+
+
+async def run_bank_model(
+    client: LlmClient,
+    model: str,
+    cases: Sequence[BankGoldenCase],
+    *,
+    repeats: int = 1,
+) -> BankModelResult:
+    scores = [await run_bank_case(client, model, case) for case in cases for _ in range(repeats)]
+    return aggregate_bank(model, scores)
+
+
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m evals.run",
@@ -271,7 +336,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--modality",
-        choices=("text", "voice"),
+        choices=("text", "voice", "bank"),
         default="text",
         help="which extraction modality to evaluate (default: text)",
     )
@@ -280,7 +345,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         type=Path,
         default=_DEFAULT_CASES_PATH,
         help=f"path to a golden .jsonl file (default: {_DEFAULT_CASES_PATH} for "
-        f"--modality text, {_DEFAULT_VOICE_CASES_PATH} for --modality voice)",
+        f"--modality text, {_DEFAULT_VOICE_CASES_PATH} for --modality voice; "
+        "required, with no default, for --modality bank — see evals/golden/bank/README.md)",
     )
     parser.add_argument(
         "--audio-dir",
@@ -289,6 +355,15 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         dest="audio_dir",
         help=f"directory `--modality voice` reads case audio from "
         f"(default: {_DEFAULT_VOICE_AUDIO_DIR})",
+    )
+    parser.add_argument(
+        "--images-dir",
+        type=Path,
+        default=None,
+        dest="images_dir",
+        help="directory `--modality bank` reads case screenshots from; required, with no "
+        "default, and refused when it resolves inside this repository (evals.paths."
+        "ensure_outside_repo) — see evals/golden/bank/README.md",
     )
     parser.add_argument(
         "--ffmpeg",
@@ -323,6 +398,23 @@ async def main(argv: Sequence[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
     args = _parse_args(argv)
 
+    if args.modality == "bank" and args.save_raw is not None:
+        # Checked before load_eval_settings, before any socket is even
+        # considered: ADR-0012's Stage-1 amendment permits refreshing
+        # tests/fixtures/openrouter/ only from synthetic golden cases, and
+        # there are none for bank — every bank case is a real household
+        # screenshot (docs/plans/stage-2_5-bank-screenshots.md, Reality
+        # check #4). `tests/fixtures/openrouter/bank_*.json` are hand-
+        # written instead; see that directory's own README.
+        print(  # noqa: T201 -- CLI error, not a debug print
+            "--save-raw is refused for --modality bank: there are no synthetic bank "
+            "golden cases to refresh a fixture from, only real household screenshots "
+            "(docs/plans/stage-2_5-bank-screenshots.md, ADR-0012's Stage-1 amendment); "
+            "tests/fixtures/openrouter/bank_*.json are hand-written instead",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
     try:
         settings = load_eval_settings()
     except MissingApiKeyError as exc:
@@ -350,7 +442,33 @@ async def main(argv: Sequence[str] | None = None) -> None:
     # converts and base64-encodes every one, eagerly) must fail here, for
     # free, rather than mid-run after some earlier cases were already
     # billed.
-    if args.modality == "voice":
+    if args.modality == "bank":
+        # No default for either flag — F4's whole point is that a fresh
+        # clone has no bank golden set to fall silently back to.
+        if args.cases == _DEFAULT_CASES_PATH:
+            print(  # noqa: T201 -- CLI error, not a debug print
+                "--cases is required for --modality bank (no default: the case file "
+                "holds real household labels and lives outside this repository — see "
+                "evals/golden/bank/README.md)",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        if args.images_dir is None:
+            print(  # noqa: T201 -- CLI error, not a debug print
+                "--images-dir is required for --modality bank (no default) — see "
+                "evals/golden/bank/README.md",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+        try:
+            bank_cases = load_bank_golden_cases(args.cases, images_dir=args.images_dir)
+        except _BANK_LOAD_ERRORS as exc:
+            # One clear line, never a raw traceback from deep inside the
+            # loader — same discipline as load_eval_settings's own
+            # MissingApiKeyError and --modality voice's AudioFetchError.
+            print(f"failed to prepare golden bank cases: {exc}", file=sys.stderr)  # noqa: T201
+            raise SystemExit(1) from exc
+    elif args.modality == "voice":
         try:
             voice_cases = await load_voice_golden_cases(
                 cases_path,
@@ -374,6 +492,14 @@ async def main(argv: Sequence[str] | None = None) -> None:
             base_url=settings.openrouter_base_url,
             timeout_seconds=settings.llm_timeout_seconds,
         )
+        if args.modality == "bank":
+            bank_results = [
+                await run_bank_model(client, model, bank_cases, repeats=args.repeats)
+                for model in models
+            ]
+            print(render_bank_table(bank_results))  # noqa: T201 -- the point of this CLI
+            return
+
         if args.modality == "voice":
             voice_results = [
                 await run_voice_model(

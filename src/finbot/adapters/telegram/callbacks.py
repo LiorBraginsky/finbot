@@ -30,3 +30,22 @@ class SetCategory(CallbackData, prefix="cat"):
 
     expense_id: int
     category_id: int
+
+
+class MessageAction(CallbackData, prefix="msg"):
+    """Packs as `msg:delall:1234` — `1234` is `messages.id`, the internal
+    inbox row a bank screenshot became (docs/plans/stage-2_5-bank-
+    screenshots.md, Step 3), never `bot_message_id`: `expenses.message_id`
+    is the FK `repo.expenses.siblings` groups by (see `handlers.py`'s note
+    on why), so `🗑 Видалити все` can act on every row from one screenshot
+    regardless of how many times its confirmation has been re-rendered
+    since.
+
+    A second prefix rather than a fourth action on `ExpenseAction`: this
+    button carries a `message_id`, not an `expense_id` — packing both shapes
+    into one `CallbackData` would make every existing `exp:` tap parse an
+    `expense_id` that, for this action, would not exist.
+    """
+
+    action: Literal["delall"]
+    message_id: int

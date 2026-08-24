@@ -29,6 +29,12 @@ with Stage 3; Stage 1 runs on `golden/` alone.
 Every ✏️ tap in Telegram therefore adds a labelled example at no cost, once Stage 3 wires
 the production source up.
 
+**A third, narrower shape: `golden/`-formatted, but never committed.** The bank modality
+(below) hand-writes cases in exactly `golden/`'s style — a `.jsonl` file with an agreed
+format — but the file itself lives outside this repository, like `voice/`'s audio, because
+here the *labels* are as private as the pixels, not just the binary behind them. See
+`evals/golden/bank/README.md`.
+
 ## Case format
 
 One JSON object per line. `evals/golden/text_v1.jsonl` is the text-modality set the `v1`
@@ -38,6 +44,9 @@ absolute date** — a literal date in a committed fixture is a clock bomb that t
 into red once the calendar moves past it. Amounts are JSON strings, never bare numbers,
 for the same reason `finbot.core.money.loads_decimal` exists: a bare JSON number is parsed
 through a `float` first, even in a test fixture.
+
+(The bank modality below is the one deliberate exception to "never an absolute date" —
+its own section explains why.)
 
 ```json
 {
@@ -130,3 +139,38 @@ the bot).
 `transcript_ok` sits alongside the four exact metrics in the printed table; everything
 else — raw counts, never percentages, `mean cost`/`p50`/`p95` — is identical to the text
 table.
+
+## Bank screenshots (docs/plans/stage-2_5-bank-screenshots.md, Stage 2.5)
+
+```bash
+python -m evals.run --modality bank --models google/gemini-3.5-flash-lite,google/gemini-3.6-flash \
+  --cases ~/finbot-vision-samples/bank_v1.jsonl --images-dir ~/finbot-vision-samples --repeats 2
+```
+
+Same production code path as text and voice: `finbot.core.extraction.bank` builds the
+request and classifies the response (`bank.plan_writes`), `finbot.llm.openrouter` performs
+the call — no repair loop here either. Input preparation follows ADR-0014 §7 exactly as
+voice does: `evals/scoring.py`'s `load_bank_golden_cases` turns each case's screenshot
+into the exact `data:image/...;base64,...` content part production sends through
+`finbot.adapters.telegram.images.to_data_url` — imported directly, never reimplemented.
+
+**Both `--cases` and `--images-dir` are required, with no default, and refused when they
+resolve inside this repository** (`evals.paths.ensure_outside_repo`) — see
+`evals/golden/bank/README.md` for why: unlike `voice_v1.jsonl`'s agreed, synthetic script,
+a bank screenshot's labels are real amounts and a real merchant, exactly as private as the
+pixels (ADR-0009, amended for this case by an ADR extending ADR-0016's `--out` guard to
+`--cases`/`--images-dir`). **`--save-raw` is refused outright for `--modality bank`** —
+there is no synthetic bank case to refresh `tests/fixtures/openrouter/bank_*.json` from,
+so those three fixtures are hand-written instead of pulled from a real run.
+
+`bank_v1.jsonl`'s `anchor_date` is **absolute and per-case**, unlike every other golden
+set's run-date-relative `occurred_offset_days` — a screenshot's date headers are baked
+into its pixels, so `--today` has no effect on this modality. See `evals/golden/bank/
+README.md` for the full case format.
+
+The printed table leads with `no_false_expense` — deliberately asymmetric, and the metric
+`MODEL_VISION`'s choice actually turns on (see that README's own Metrics section) — then
+`schema_ok`, `feed_ok`, `count_exact`, `kind_exact`, `dropped_exact`,
+`expense_count_exact`, `amount_exact`, `category_exact`, `date_exact`, then cost/latency.
+A fresh clone cannot run this modality at all until a private case set exists — the
+correct, honest failure (Stage 2.5's Owner prerequisite 1), not a reason to commit one.

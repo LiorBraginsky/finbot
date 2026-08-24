@@ -4,10 +4,16 @@ Persistence for plain text already happened in middleware by the time these
 run — see `middlewares.py`. Plain expense text has **no handler here**: the
 inbox middleware persists it and `runner.py`'s drain loop replies; aiogram
 logging it "not handled" at this layer is correct and expected. Voice is the
-same, from Stage 2 (docs/roadmap.md): a voice message becomes a PENDING row
-just like text, and the drain loop is what eventually replies — see
-`repo.messages._initial_status` and `core.extraction.pipeline`. Only photo
-still gets an inline `unsupported_modality` reply below, until Stage 4.
+same, from Stage 2, and photo is the same again from Stage 2.5
+(docs/roadmap.md): a voice message or a bank screenshot becomes a PENDING
+row just like text, and the drain loop is what eventually replies — see
+`repo.messages._initial_status` and `core.extraction.pipeline`. There is
+**no `@router.message(F.photo)` handler here any more**
+(docs/plans/stage-2_5-bank-screenshots.md, Reality check #1): it used to
+answer a photo inline with `UNSUPPORTED_MODALITY_REPLY`, and removing it is
+the other half of the same commit that flips `_initial_status`'s PHOTO
+branch to PENDING — leaving either change without the other would send two
+contradictory answers to one screenshot.
 
 Everything registered here answers **inline**: fast, no LLM, no `messages`
 row. A tap on ✏️/🗑/a category button is not written to `messages` — that
@@ -47,20 +53,20 @@ from aiogram.types import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from finbot.adapters.telegram.callbacks import ExpenseAction, SetCategory
+from finbot.adapters.telegram.callbacks import ExpenseAction, MessageAction, SetCategory
 from finbot.adapters.telegram.keyboards import category_keyboard, confirmation_keyboard
 from finbot.adapters.telegram.render import (
     CALLBACK_FAILURE_REPLY,
     HELP_TEXT,
-    UNSUPPORTED_MODALITY_REPLY,
     ConfirmationLine,
     render_confirmation,
     render_report,
 )
 from finbot.core.categories.catalog import CATALOG
+from finbot.core.models import MessageKind
 from finbot.core.reporting.periods import Period
 from finbot.core.reporting.periods import resolve as resolve_period
-from finbot.repo import categories, corrections, expenses, reports, users
+from finbot.repo import categories, corrections, expenses, messages, reports, users
 from finbot.repo.expenses import ExpenseView
 
 logger = logging.getLogger(__name__)
@@ -122,20 +128,35 @@ async def _rerender_group(
     *, bot: Bot, query: CallbackQuery, session: AsyncSession, message_id: int, tz: ZoneInfo
 ) -> None:
     """Re-renders the whole confirmation for `message_id`'s siblings after a
-    ✏️/🗑 tap changed one of them — the numbering and the still-active
+    ✏️/🗑/🗑-all tap changed one of them — the numbering and the still-active
     buttons both come from the same `ExpenseView` list, so they cannot
     disagree with each other.
+
+    Reads `messages.kind` for `message_id` to decide whether the `🗑
+    Видалити все` row belongs on the re-rendered keyboard
+    (docs/plans/stage-2_5-bank-screenshots.md, Approach D2): a bank
+    screenshot keeps it on every re-render, including past the
+    `MAX_CONFIRMATION_ROWS` cap, so a batch of real money stays one-tap
+    undoable for its whole life — not only on the first send. Text and voice
+    never had a source row here to ask; `source is None` cannot happen in
+    practice (an expense's `message_id` FK guarantees one), but is treated
+    the same as "not a photo" rather than raised, since this function's job
+    is rendering, not validating that invariant.
     """
     views = await expenses.siblings(session, message_id)
     lines = _to_lines(views)
     today = datetime.now(tz=tz).date()
     ref = _message_ref(query)
+    source = await messages.get(session, message_id)
+    delete_all_message_id = (
+        message_id if source is not None and source.kind == MessageKind.PHOTO else None
+    )
     try:
         await bot.edit_message_text(
             chat_id=ref.chat.id,
             message_id=ref.message_id,
             text=render_confirmation(lines, today=today),
-            reply_markup=confirmation_keyboard(lines),
+            reply_markup=confirmation_keyboard(lines, delete_all_message_id=delete_all_message_id),
         )
     except TelegramBadRequest as exc:
         # A redelivered tap (e.g. a second identical 🗑 or category pick)
@@ -164,10 +185,6 @@ def build_router(tz: ZoneInfo) -> Router:
     @router.message(Command("help"))
     async def help_command(message: Message) -> None:
         await message.answer(HELP_TEXT)
-
-    @router.message(F.photo)
-    async def unsupported_modality(message: Message) -> None:
-        await message.answer(UNSUPPORTED_MODALITY_REPLY)
 
     # Last message handler, deliberately: aiogram tries a router's message
     # handlers in registration order and stops at the first whose filter
@@ -295,6 +312,52 @@ def build_router(tz: ZoneInfo) -> Router:
         except Exception:
             logger.exception(
                 "set-category callback failed for expense_id=%s", callback_data.expense_id
+            )
+            await query.answer(CALLBACK_FAILURE_REPLY)
+
+    @router.callback_query(MessageAction.filter(F.action == "delall"))
+    async def delete_all(
+        query: CallbackQuery,
+        callback_data: MessageAction,
+        session: AsyncSession,
+        bot: Bot,
+        sender: User,
+    ) -> None:
+        """The `🗑 Видалити все` row `confirmation_keyboard` appends on the
+        bank path (docs/plans/stage-2_5-bank-screenshots.md, Approach D2,
+        R9): soft-deletes every not-yet-deleted sibling of
+        `callback_data.message_id` and records one `corrections` row per
+        row it actually deletes — `_corrector_id`, exactly like
+        `delete_expense`/`set_category` above, never `sender.id` directly
+        (that FK trap: `corrections.corrected_by` points at `users.id`, not
+        a raw Telegram id). Idempotent under a redelivered tap: a sibling
+        already deleted contributes no correction and no soft-delete, the
+        same guard `expenses.soft_delete` itself applies.
+        """
+        try:
+            siblings = await expenses.siblings(session, callback_data.message_id)
+            active = [view for view in siblings if not view.deleted]
+            if active:
+                corrected_by = await _corrector_id(session, sender)
+                for view in active:
+                    await corrections.record(
+                        session,
+                        expense_id=view.id,
+                        before={"deleted_at": None},
+                        after={"deleted_at": "now"},
+                        corrected_by=corrected_by,
+                    )
+                    await expenses.soft_delete(session, view.id)
+                await session.commit()
+            # else: every sibling is already deleted — a redelivered tap.
+
+            await _rerender_group(
+                bot=bot, query=query, session=session, message_id=callback_data.message_id, tz=tz
+            )
+            await query.answer("Видалив усе")
+        except Exception:
+            logger.exception(
+                "delete-all callback failed for message_id=%s", callback_data.message_id
             )
             await query.answer(CALLBACK_FAILURE_REPLY)
 

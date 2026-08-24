@@ -1,0 +1,23 @@
+{
+  "id": "gen-fixture-bank-multi-day",
+  "provider": "Google",
+  "model": "google/gemini-3.5-flash-lite",
+  "object": "chat.completion",
+  "created": 1754800300,
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"is_transaction_feed\": true, \"rows\": [{\"date_header\": \"Сьогодні\", \"time\": \"10:00\", \"merchant\": \"Кав'ярня\", \"amount\": 75.00, \"kind\": \"expense\", \"category\": \"dining_out\", \"partially_visible\": false}, {\"date_header\": \"Вчора\", \"time\": \"19:15\", \"merchant\": \"АТБ\", \"amount\": 410.20, \"kind\": \"expense\", \"category\": \"groceries\", \"partially_visible\": false}]}"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 1500,
+    "completion_tokens": 130,
+    "total_tokens": 1630,
+    "cost": 0.0018
+  }
+}

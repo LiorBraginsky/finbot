@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     # what "unset" looks like once `voice_model_candidates` below resolves
     # it, exactly like `model_fallbacks`.
     model_voice: str = ""
+    # Unset by default, for the same reason as model_voice above: Stage 2.5
+    # requires the bot to run with a photo answered "skipped" rather than
+    # fail at startup, until an eval through the production request path
+    # chooses a vision-capable model (docs/plans/stage-2_5-bank-screenshots.md).
+    model_vision: str = ""
     # str, not list[str]: pydantic-settings JSON-decodes any complex-typed
     # field straight from the environment, so a list[str] field would fail
     # to parse "a,b" before any validator of ours ever ran. Comma-splitting
@@ -74,6 +79,23 @@ class Settings(BaseSettings):
         return (self.model_voice, *fallbacks)
 
     @property
+    def vision_model_candidates(self) -> tuple[str, ...]:
+        """Empty when `model_vision` is unset — mirrors `voice_model_
+        candidates` exactly, for the same reason: `core.extraction.pipeline`
+        reads an empty tuple as "vision is not configured yet" and neither
+        downloads a photo nor calls anything. `model_fallbacks` is shared
+        across every modality (docs/plans/stage-2_5-bank-screenshots.md's
+        Step 2 file list), so a text-only fallback list would silently drop
+        an image on the floor the moment the primary vision model errors —
+        `MODEL_FALLBACKS` must be multimodal, an owner prerequisite this
+        property cannot itself enforce.
+        """
+        if not self.model_vision.strip():
+            return ()
+        fallbacks = [part.strip() for part in self.model_fallbacks.split(",") if part.strip()]
+        return (self.model_vision, *fallbacks)
+
+    @property
     def tz(self) -> ZoneInfo:
         return ZoneInfo(self.timezone)
 
@@ -98,11 +120,16 @@ class Settings(BaseSettings):
         # rate-limited (see docs/plans/stage-1-text-to-expense.md's Reality
         # check) — failing at startup beats discovering it from a 429 at
         # 2 a.m. or, worse, silently training a provider on household data.
-        # voice_model_candidates too: an unset MODEL_VOICE is fine (it's an
-        # empty tuple), but a configured one is held to the same ban.
+        # voice_model_candidates/vision_model_candidates too: an unset
+        # MODEL_VOICE/MODEL_VISION is fine (it's an empty tuple), but a
+        # configured one is held to the same ban.
         free_ids = [
             candidate
-            for candidate in (*self.model_candidates, *self.voice_model_candidates)
+            for candidate in (
+                *self.model_candidates,
+                *self.voice_model_candidates,
+                *self.vision_model_candidates,
+            )
             if candidate.endswith(":free")
         ]
         if free_ids:

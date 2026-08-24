@@ -65,14 +65,21 @@ from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import select
 
+# `as RepoPathError` (not a bare import) is the same self-re-export idiom
+# `convert_to_mp3` uses elsewhere in evals/ (see evals/scoring.py): pyflakes
+# would otherwise flag it as unused here, since nothing in this module's own
+# body raises or catches it — it exists only for tests/unit/test_pull_voice_
+# samples.py, which imports it directly, unchanged, across the move to
+# evals.paths.
+from evals.paths import REPO_ROOT, ensure_outside_repo
+from evals.paths import RepoPathError as RepoPathError
 from finbot.core.models import MessageKind
 from finbot.repo.engine import create_sessionmaker
 from finbot.repo.models import Message
 
-# This file's own parent directory (evals/)'s parent is the repo root —
-# resolved, not assumed, so a symlinked or relative --out can't slip past
-# the check in _validate_out_dir below.
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+# Re-exported under its original private name for the same reason as
+# RepoPathError above.
+_REPO_ROOT = REPO_ROOT
 
 
 class _Settings(BaseSettings):
@@ -94,10 +101,6 @@ def _load_settings(*, env_file: str | Path | None = ".env") -> _Settings:
     return _Settings(_env_file=env_file)
 
 
-class RepoPathError(ValueError):
-    """`--out` resolves inside this repository — ADR-0016 forbids that."""
-
-
 class MissingDatabaseUrlError(RuntimeError):
     """`--message-ids` resolves `messages.id` to `file_id` through Postgres
     and needs `DATABASE_URL`; `--file-ids` does not — see the module
@@ -106,17 +109,12 @@ class MissingDatabaseUrlError(RuntimeError):
 
 
 def _validate_out_dir(out_dir: Path) -> Path:
-    """Refuses a destination this repository's own `git add` could ever
-    reach — checked against the resolved path, not trusted to the caller's
-    own `.gitignore` discipline (ADR-0016's whole point).
+    """`--out` must resolve outside this repository (ADR-0016) — the check
+    itself now lives in `evals.paths.ensure_outside_repo`, shared with the
+    Stage 2.5 bank golden set's `--cases`/`--images-dir`, so this is a thin,
+    `--out`-flavoured wrapper rather than a second copy of the comparison.
     """
-    resolved = out_dir.expanduser().resolve()
-    if resolved == _REPO_ROOT or _REPO_ROOT in resolved.parents:
-        raise RepoPathError(
-            f"--out ({resolved}) is inside this repository ({_REPO_ROOT}); "
-            "ADR-0016 requires voice samples to be written outside it"
-        )
-    return resolved
+    return ensure_outside_repo(out_dir, flag="--out")
 
 
 def _parse_message_ids(raw: str) -> list[int]:

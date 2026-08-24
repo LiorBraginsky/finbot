@@ -1,7 +1,11 @@
 # ADR-0009 — Public repository, private data stays in the database
 
 **Date:** 2026-08-09 · **Status:** accepted (a narrow exception carved out by
-[ADR-0016](0016-narrow-exception-for-owner-named-voice-samples.md))
+[ADR-0016](0016-narrow-exception-for-owner-named-voice-samples.md); amended a second
+time by [ADR-0019](0019-bank-eval-labels-are-as-private-as-its-pixels.md), which finds
+that "`evals/golden/` holds committed synthetic cases" does not survive a modality whose
+*labels* are the private data, and moves a bank-feed golden set — cases and images alike
+— out of the repository entirely)
 
 ## Context
 

@@ -1,0 +1,23 @@
+{
+  "id": "gen-fixture-bank-feed-ok",
+  "provider": "Google",
+  "model": "google/gemini-3.5-flash-lite",
+  "object": "chat.completion",
+  "created": 1754800200,
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"is_transaction_feed\": true, \"rows\": [{\"date_header\": \"Сьогодні\", \"time\": \"14:32\", \"merchant\": \"Silpo\", \"amount\": 320.50, \"kind\": \"expense\", \"category\": \"groceries\", \"partially_visible\": false}, {\"date_header\": \"Сьогодні\", \"time\": \"09:00\", \"merchant\": \"Скарбничка\", \"amount\": 50, \"kind\": \"savings\", \"category\": \"other\", \"partially_visible\": false}, {\"date_header\": \"Сьогодні\", \"time\": null, \"merchant\": \"На свою картку *0000\", \"amount\": 1000, \"kind\": \"own_transfer\", \"category\": \"other\", \"partially_visible\": false}]}"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 1500,
+    "completion_tokens": 140,
+    "total_tokens": 1640,
+    "cost": 0.0019
+  }
+}

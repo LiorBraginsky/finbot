@@ -18,6 +18,7 @@ from sqlalchemy import (
     SmallInteger,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -138,6 +139,17 @@ class Extraction(Base):
 
 class Expense(Base):
     __tablename__ = "expenses"
+    # Stage 2.5 Step 2 (Approach C2): the database-enforced dedup guarantee.
+    # NULLs are distinct in Postgres, so this constraint is silent for every
+    # text/voice expense (bank_txn_key IS NULL, always) and load-bearing only
+    # for bank rows, where a keyed insert's `ON CONFLICT DO NOTHING` against
+    # it is what makes re-sending the same screenshot write nothing new — a
+    # guarantee that lives here, not in application code. The constraint is
+    # not conditioned on `deleted_at`, so a 🗑'd bank row is deliberately
+    # *not* resurrected by re-sending the screenshot.
+    __table_args__ = (
+        UniqueConstraint("user_id", "bank_txn_key", name="uq_expenses_user_bank_txn_key"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     message_id: Mapped[int] = mapped_column(
@@ -159,6 +171,10 @@ class Expense(Base):
     )
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     bot_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Bank-feed rows only (Stage 2.5 Step 2): `date|time|amount` at two
+    # decimals (`core.extraction.bank.bank_txn_key`), `NULL` for every text
+    # and voice expense — see `__table_args__` above for what this enables.
+    bank_txn_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class Correction(Base):

@@ -26,7 +26,7 @@ OpenAI-style `image_url` content part carrying `data:image/jpeg;base64,…`, str
 `response_format`, `provider: {data_collection: deny, require_parameters: true}`.
 Images pass through, strict output holds, **$0.0018–0.0020 per screenshot**, and the
 model classified every row correctly across all three images — including `Скарбничка`
-and `Округлення залишку` as savings, `На свою картку *6935` as an own transfer, `+14 000`
+and `Округлення залишку` as savings, `На свою картку *0000` as an own transfer, `+a five-figure sum` (an incoming transfer)
 as income, an empty date header kept empty, and a row cut off at the edge flagged rather
 than guessed.
 
@@ -160,7 +160,7 @@ No step depends on an owner prerequisite.
 |---|---|---|---|
 | A1 | **Nothing new is stored.** Non-expense rows live in `extractions.raw_response` (already written verbatim per attempt, rule 6) and in the reply | Zero schema cost. Already queryable. Respects vision.md's exclusions | "How much went to the jar this month" is a JSONB query, not a report |
 | A2 | A `bank_rows` table holding every row | Direct SQL over transfers | **A fourth copy of data already in `extractions`** — the "two answers to one question" ADR-0013 §2 and ADR-0009 both rejected. Starts tracking income and savings, which vision.md excludes. A table nothing reads, migrated and backed up forever |
-| A3 | Write them to `expenses` with a `kind` column, excluded from reports | One table | Catastrophic: every report and every future query must remember the predicate. One forgotten `WHERE` counts a 7 586 transfer as spending |
+| A3 | Write them to `expenses` with a `kind` column, excluded from reports | One table | Catastrophic: every report and every future query must remember the predicate. One forgotten `WHERE` counts a five-figure transfer as spending |
 
 **Chosen: A1.** Provenance is already satisfied by ADR-0006's three tables; a fourth
 weakens the property ADR-0006 exists to protect. Visibility is a *reply* requirement.
@@ -371,7 +371,7 @@ tests in this stage): *a golden-set loader for a private modality must refuse a 
 inside the repository*, and *`--save-raw` is only ever pointed at synthetic cases*.
 
 **Not ADR-worthy, recorded in the roadmap instead:** Stage 4 inherits the
-photo-disambiguation debt; Stage 5 gains an `education` candidate (`Preply Inc.` →
+photo-disambiguation debt; Stage 5 gains an `education` candidate (an education service →
 `other`); Stage 6 owns date and amount editing, the only real remedy for a wrong anchor;
 the voice-transcript-line-lost-on-rerender bug is Stage 2's, for the reviewer to log.
 
@@ -616,7 +616,7 @@ outside the repo):
  "rows": [
    {"kind": "savings",      "amount": "6.35",   "partially_visible": false},
    {"kind": "own_transfer", "amount": "123.60", "partially_visible": false},
-   {"kind": "expense",      "amount": "193.65", "category": "groceries",     "occurred_offset_days": 0,  "partially_visible": false},
+   {"kind": "expense",      "amount": "320.50", "category": "groceries",     "occurred_offset_days": 0,  "partially_visible": false},
    {"kind": "expense",      "amount": "43.19",  "category": "subscriptions", "occurred_offset_days": 0,  "partially_visible": true}
  ]}
 ```

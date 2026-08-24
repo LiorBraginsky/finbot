@@ -14,7 +14,8 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
-from sqlalchemy import select, update
+from sqlalchemy import select, tuple_, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from finbot.repo.models import Category, Expense
@@ -66,6 +67,107 @@ async def create(
     session.add(expense)
     await session.flush()
     return expense.id
+
+
+async def create_bank_row(
+    session: AsyncSession,
+    *,
+    message_id: int,
+    user_id: int,
+    category_id: int,
+    item: str,
+    amount: Decimal,
+    occurred_at: date,
+    bank_txn_key: str,
+) -> int | None:
+    """Insert one bank-feed row, or do nothing if `(user_id, bank_txn_key)`
+    already exists — the database-enforced half of Approach C2's dedup
+    guarantee (`uq_expenses_user_bank_txn_key`, `repo.models.Expense`).
+
+    Returns the new row's id, or `None` when the insert conflicted — that
+    `None` *is* the "already recorded" counter (R8), exactly like
+    `repo.messages.add_if_new`'s own `None` return for a redelivered update.
+    Never a `SELECT`-then-filter: ADR-0012's reasoning is that this project
+    tests against a real Postgres precisely so a unique index can be relied
+    on directly, not re-derived in application code.
+
+    Same columns and values as `create()` otherwise (UAH, `fx_rate=1`,
+    `fx_rate_date=occurred_at`) — a bank row is truth after the model's
+    classification exactly like a text or voice one, and Stage 1.5's FX
+    change applies to both the same way.
+    """
+    stmt = (
+        insert(Expense)
+        .values(
+            message_id=message_id,
+            user_id=user_id,
+            category_id=category_id,
+            item=item,
+            amount=amount,
+            currency="UAH",
+            amount_uah=amount,
+            fx_rate=Decimal("1"),
+            fx_rate_date=occurred_at,
+            occurred_at=occurred_at,
+            bank_txn_key=bank_txn_key,
+        )
+        .on_conflict_do_nothing(index_elements=[Expense.user_id, Expense.bank_txn_key])
+        .returning(Expense.id)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def manual_duplicate_candidates(
+    session: AsyncSession, pairs: Sequence[tuple[date, Decimal]], *, user_id: int
+) -> list[ExpenseView]:
+    """Non-deleted, non-bank expenses (`bank_txn_key IS NULL`) belonging to
+    `user_id` whose `(occurred_at, amount)` matches one of `pairs` — the
+    screenshot<->manual collision Approach C2's key cannot itself catch,
+    since a manually typed expense carries no key at all. R7: named in the
+    reply, never merged and never suppressed — both rows keep existing, and
+    the human resolves it with 🗑. `pairs` is expected to be the handful of
+    rows one screenshot actually wrote, not a manual duplicate scan over the
+    whole table.
+
+    Scoped to `user_id` for the same reason `bank_txn_key`'s own uniqueness
+    is per user (ADR-0018 §6): without it, one household member's screenshot
+    reports the *other* member's manually typed expense as a possible
+    duplicate, which is not a collision either of them can actually resolve
+    — a coincidence of two different people's spending, not a duplicate.
+    """
+    if not pairs:
+        return []
+    stmt = (
+        select(
+            Expense.id,
+            Expense.item,
+            Expense.amount,
+            Category.name.label("category_slug"),
+            Expense.occurred_at,
+            Expense.deleted_at,
+        )
+        .join(Category, Category.id == Expense.category_id)
+        .where(
+            Expense.user_id == user_id,
+            Expense.deleted_at.is_(None),
+            Expense.bank_txn_key.is_(None),
+            tuple_(Expense.occurred_at, Expense.amount).in_(pairs),
+        )
+        .order_by(Expense.id)
+    )
+    rows = (await session.execute(stmt)).all()
+    return [
+        ExpenseView(
+            id=row.id,
+            item=row.item,
+            amount=row.amount,
+            category_slug=row.category_slug,
+            occurred_at=row.occurred_at,
+            deleted=row.deleted_at is not None,
+        )
+        for row in rows
+    ]
 
 
 async def get(session: AsyncSession, expense_id: int) -> Expense | None:

@@ -9,6 +9,8 @@ from datetime import date
 from decimal import Decimal
 
 from finbot.core.categories.catalog import CATALOG, SLUGS
+from finbot.core.extraction.pipeline import BankSummary
+from finbot.core.extraction.schema import BankRowKind
 from finbot.core.reporting import Report
 
 # Ukrainian labels, presentation only — the stable identifier is the slug
@@ -40,13 +42,38 @@ NO_EXPENSE_REPLY = (
     "Не зрозумів, що саме витрачено. Напиши, будь ласка, що і скільки — "
     "наприклад: «хліб 50, таксі 200»."
 )
-UNSUPPORTED_MODALITY_REPLY = "Поки що я розумію лише текст і голос. Фото — скоро."
+# UNSUPPORTED_MODALITY_REPLY is gone (docs/plans/stage-2_5-bank-screenshots.md,
+# Reality check #1): a photo is no longer unsupported, and
+# `handlers.py`'s `@router.message(F.photo)` — the only sender of this
+# reply — is removed in the same commit that flips `repo.messages.
+# _initial_status`'s PHOTO branch to PENDING. Keeping the constant around
+# unused would be a dead string with no caller to catch drifting from it.
 # Sent when a voice message arrives while `MODEL_VOICE` is unset
 # (core.extraction.pipeline, docs/roadmap.md Stage 2) — the owner sets it
 # after running the voice eval.
 VOICE_NOT_CONFIGURED_REPLY = (
     "Голосові повідомлення ще не налаштовані. Напиши, будь ласка, текстом — "
     "наприклад: «хліб 50, таксі 200»."
+)
+# Mirrors VOICE_NOT_CONFIGURED_REPLY: sent when a photo arrives while
+# `MODEL_VISION` is unset (core.extraction.pipeline.VISION_NOT_CONFIGURED_
+# ERROR, docs/plans/stage-2_5-bank-screenshots.md R10) — the owner sets
+# `MODEL_VISION` after running the bank-screenshot eval.
+VISION_NOT_CONFIGURED_REPLY = (
+    "Розпізнавання скріншотів ще не налаштоване. Напиши, будь ласка, текстом — "
+    "наприклад: «хліб 50, таксі 200»."
+)
+# `render_bank_note` falls back to this single line instead of the usual
+# multi-line note (Approach E's `is_transaction_feed` guard) whenever
+# `BankSummary` carries nothing to report at all: no row was written, no row
+# was skipped for a named reason, nothing was already recorded, and no
+# manual collision was found. That is exactly what a photographed receipt,
+# a screenshot of something else entirely, or a genuinely empty feed all
+# produce — from the reply's point of view there is nothing to tell them
+# apart, so no attempt is made to.
+NOT_A_BANK_FEED_REPLY = (
+    "Не схоже на виписку банку — нічого не записав. Якщо це вона, спробуй, "
+    "будь ласка, чіткіший скріншот."
 )
 CALLBACK_FAILURE_REPLY = "Не вдалося, спробуй ще"
 EMPTY_REPORT_REPLY = "Нічого не записано за цей період."
@@ -84,6 +111,8 @@ def voice_too_long_reply(max_seconds: int) -> str:
 HELP_TEXT = (
     "Я записую витрати з тексту — просто напиши, що і скільки, "
     "наприклад: «хліб 50, таксі 200».\n\n"
+    "Скріншот виписки банку теж підійде — я запишу витрати з нього і покажу, "
+    "що саме пропустив (заощадження, перекази, надходження).\n\n"
     "Команди:\n"
     "/day — витрати за сьогодні\n"
     "/week — за тиждень\n"
@@ -190,6 +219,97 @@ def render_confirmation(
         body = "\n".join([header, *rows, f"Разом: {_amount_text(active_total)} ₴"])
 
     return body if transcript is None else f"{transcript_line(transcript)}\n{body}"
+
+
+# Presentation order and Ukrainian labels for `BankPlan.skipped_by_kind`
+# (Approach D2's note) — deliberately not `BankRowKind`'s own declaration
+# order (expense, income, savings, own_transfer, transfer_out): "money
+# that's still ours" (savings, own_transfer) reads before "money that left
+# to someone else" (transfer_out), which reads before "money that arrived"
+# (income) — the order the plan's own worked example uses.
+_SKIP_LABELS: dict[BankRowKind, str] = {
+    BankRowKind.SAVINGS: "скарбничка",
+    BankRowKind.OWN_TRANSFER: "переказ собі",
+    BankRowKind.TRANSFER_OUT: "переказ",
+    BankRowKind.INCOME: "надходження",
+}
+_SKIP_ORDER: tuple[BankRowKind, ...] = (
+    BankRowKind.SAVINGS,
+    BankRowKind.OWN_TRANSFER,
+    BankRowKind.TRANSFER_OUT,
+    BankRowKind.INCOME,
+)
+
+# The plan's own rule (## Chosen approach): warnings capped at five, with a
+# trailing "and N more" line past that — a worst-case 20-row feed would
+# otherwise print one ⚠️ line per manual collision and risk Telegram's
+# 4096-character limit the same way an unbounded voice transcript could (see
+# `transcript_line`).
+_MAX_COLLISION_WARNINGS = 5
+
+
+def render_bank_note(summary: BankSummary, *, anchor: date) -> str:
+    """The note a bank screenshot always gets first (Approach D2), sent as
+    its own message and never edited again — unlike the confirmation that
+    may follow, which `handlers._rerender_group` rebuilds from scratch on
+    every ✏️/🗑 tap and therefore cannot carry anything modality-specific
+    (Reality check #2). `anchor` is `message.created_at` in the household's
+    timezone (Approach B): the one thing every relative date header in this
+    screenshot was resolved against, always stated so a wrong guess is
+    visible rather than silent (R5, R8).
+
+    Falls back to `NOT_A_BANK_FEED_REPLY` when `summary` has nothing to
+    report at all — see that constant's own docstring for why that reading
+    covers both a genuinely empty feed and `is_transaction_feed: false`
+    without needing to tell them apart.
+    """
+    plan = summary.plan
+    written = len(plan.writes)
+    skip_parts = [
+        f"{_SKIP_LABELS[kind]} {plan.skipped_by_kind[kind]}"
+        for kind in _SKIP_ORDER
+        if plan.skipped_by_kind.get(kind)
+    ]
+    has_anything_to_report = (
+        written
+        or skip_parts
+        or plan.cut_off
+        or plan.unresolved_date
+        or plan.bad_amount
+        or plan.unclassified
+        or summary.duplicates
+        or summary.manual_collisions
+    )
+    if not has_anything_to_report:
+        return NOT_A_BANK_FEED_REPLY
+
+    lines = [f"🧾 Скріншот за {anchor:%d.%m} — дати рахував від цього дня."]
+    if written:
+        lines.append(f"Записав: {written} (нижче).")
+    if skip_parts:
+        lines.append(f"Пропустив: {', '.join(skip_parts)}.")
+    if plan.cut_off:
+        lines.append(f"Обрізано на краю: {plan.cut_off} — не вгадував.")
+    if summary.duplicates:
+        lines.append(f"Вже було: {summary.duplicates}.")
+    if plan.unresolved_date:
+        lines.append(f"Не зрозумів дату: {plan.unresolved_date}.")
+    if plan.bad_amount:
+        lines.append(f"Не розібрав суму: {plan.bad_amount}.")
+    if plan.unclassified:
+        lines.append(f"Не визначив тип: {plan.unclassified}.")
+
+    shown_collisions = summary.manual_collisions[:_MAX_COLLISION_WARNINGS]
+    lines.extend(
+        f"⚠️ Можливий дубль: «{collision.item}» {_amount_text(collision.amount)} за "
+        f"{collision.occurred_at:%d.%m} уже записано вручну."
+        for collision in shown_collisions
+    )
+    remaining_collisions = len(summary.manual_collisions) - len(shown_collisions)
+    if remaining_collisions > 0:
+        lines.append(f"…і ще {remaining_collisions}.")
+
+    return "\n".join(lines)
 
 
 def render_report(report: Report) -> str:

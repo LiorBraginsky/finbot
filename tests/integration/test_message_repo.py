@@ -4,7 +4,7 @@ Postgres (see tests/conftest.py). No skipif on Docker availability.
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from finbot.core.models import IncomingMessage, MessageKind, MessageStatus
@@ -128,8 +128,12 @@ async def test_add_if_new_sets_pending_for_voice(db_session: AsyncSession) -> No
     assert row.duration_seconds == 5
 
 
-async def test_add_if_new_sets_skipped_for_a_photo(db_session: AsyncSession) -> None:
-    """Photo stays SKIPPED until Stage 4 gives it a pipeline of its own."""
+async def test_add_if_new_sets_pending_for_a_photo(db_session: AsyncSession) -> None:
+    """From Stage 2.5 (docs/plans/stage-2_5-bank-screenshots.md): a photo
+    becomes a PENDING row exactly like plain text and voice, so the drain
+    loop claims and processes it — unlike Stage 0-2, where photo was
+    SKIPPED.
+    """
     message = _message(kind=MessageKind.PHOTO, raw_text=None, file_id="photo-file-id")
     user_id = await users.get_or_create(db_session, message.telegram_user_id, message.display_name)
 
@@ -139,7 +143,34 @@ async def test_add_if_new_sets_skipped_for_a_photo(db_session: AsyncSession) -> 
 
     row = await db_session.get(Message, row_id)
     assert row is not None
-    assert row.status == MessageStatus.SKIPPED
+    assert row.status == MessageStatus.PENDING
+
+
+async def test_a_pre_existing_skipped_photo_row_is_not_claimable(db_session: AsyncSession) -> None:
+    """The no-backfill decision, pinned
+    (docs/plans/stage-2_5-bank-screenshots.md, Step 3): a photo persisted
+    before this stage shipped is SKIPPED on disk, and nothing here resurrects
+    it into the drain loop's queue — `claim_next` only ever looks at
+    `status == 'pending'`, and this row's status was never touched by the
+    `_initial_status` change, which only decides the status of a *new* row.
+    """
+    message = _message(kind=MessageKind.PHOTO, raw_text=None, file_id="photo-file-id")
+    user_id = await users.get_or_create(db_session, message.telegram_user_id, message.display_name)
+    row_id = await messages.add_if_new(db_session, message, user_id)
+    await db_session.commit()
+    assert row_id is not None
+
+    # Simulates a row from before the Stage-2.5 flip, when `_initial_status`
+    # still returned SKIPPED for PHOTO — bypassing `add_if_new` on purpose,
+    # since that function only ever produces today's (PENDING) status.
+    await db_session.execute(
+        update(Message).where(Message.id == row_id).values(status=MessageStatus.SKIPPED)
+    )
+    await db_session.commit()
+
+    claimed = await messages.claim_next(db_session, datetime.now(UTC))
+
+    assert claimed is None
 
 
 async def test_claim_next_returns_the_oldest_pending_row_and_increments_attempts(

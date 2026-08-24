@@ -16,19 +16,31 @@ from finbot.repo.models import Message
 def _initial_status(message: IncomingMessage) -> MessageStatus:
     """Commands never reach extraction — this is where the Stage-0 plan's
     "filtering commands out of extraction is Stage 1's job" lands. Plain
-    text and, from Stage 2, voice are both PENDING rows the drain loop will
-    claim; photos stay SKIPPED until Stage 4 gives them a pipeline of their
-    own. `core.extraction.pipeline` is what refuses an unconfigured or
-    too-long voice note — as a PENDING row it still goes through the drain
-    loop, exactly like the foreign-currency guard does for text, rather than
-    being turned away here where there is no way to reply.
+    text, voice (Stage 2) and, from Stage 2.5, photos are all PENDING rows
+    the drain loop will claim. `core.extraction.pipeline` is what refuses an
+    unconfigured or too-long voice note, or a photo with `MODEL_VISION`
+    unset — as a PENDING row it still goes through the drain loop, exactly
+    like the foreign-currency guard does for text, rather than being turned
+    away here where there is no way to reply.
+
+    Flipping PHOTO from SKIPPED to PENDING here is only safe alongside
+    removing `handlers.py`'s `@router.message(F.photo)` reply in the same
+    commit (docs/plans/stage-2_5-bank-screenshots.md, Reality check #1):
+    that handler answered inline, fast-lane, while a PENDING photo would
+    also be answered — later, note-then-confirmation — by the drain loop,
+    so leaving both in place even briefly would send two contradictory
+    replies to one screenshot.
     """
     if message.kind == MessageKind.TEXT:
         is_plain_text = not (message.raw_text or "").startswith("/")
         return MessageStatus.PENDING if is_plain_text else MessageStatus.SKIPPED
-    if message.kind == MessageKind.VOICE:
-        return MessageStatus.PENDING
-    return MessageStatus.SKIPPED
+    # VOICE and PHOTO are `MessageKind`'s only other members — both PENDING,
+    # unconditionally. Written this way, not as a second `if ... in (...)`
+    # branch plus a trailing SKIPPED default, because mypy correctly narrows
+    # that default to unreachable once every member is covered by the two
+    # branches above it, and an unreachable line is dead code, not a safety
+    # net against a fourth MessageKind ever being added silently.
+    return MessageStatus.PENDING
 
 
 async def add_if_new(session: AsyncSession, message: IncomingMessage, user_id: int) -> int | None:
@@ -55,6 +67,16 @@ async def add_if_new(session: AsyncSession, message: IncomingMessage, user_id: i
     )
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
+
+
+async def get(session: AsyncSession, message_id: int) -> Message | None:
+    """Not in Step 3's own file list, mirroring `repo.expenses.get`'s own
+    docstring on the same point: `handlers._rerender_group` needs to know
+    whether the message a confirmation's siblings came from is a photo — to
+    decide whether the `🗑 Видалити все` row survives a re-render — and
+    `session.get` is the whole of that lookup.
+    """
+    return await session.get(Message, message_id)
 
 
 async def claim_next(session: AsyncSession, now: datetime) -> Message | None:

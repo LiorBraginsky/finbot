@@ -50,11 +50,12 @@ from datetime import date
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from finbot.core.categories.catalog import CategorySpec
-from finbot.core.extraction import text, voice
+from finbot.core.extraction import bank, text, voice
 from finbot.core.extraction.common import ExtractionInvalidError, build_repair_request
 from finbot.core.extraction.currency import FOREIGN_CURRENCY_ERROR, detect_foreign_currency
 from finbot.core.extraction.ports import (
     AudioFetchError,
+    ImageFetchError,
     LlmClient,
     LlmError,
     LlmRequest,
@@ -62,7 +63,7 @@ from finbot.core.extraction.ports import (
 )
 from finbot.core.extraction.schema import ExpenseDraft
 from finbot.core.models import ExtractionStatus, MessageKind
-from finbot.prompts import PROMPT_VERSION_TEXT, PROMPT_VERSION_VOICE
+from finbot.prompts import PROMPT_VERSION_BANK, PROMPT_VERSION_TEXT, PROMPT_VERSION_VOICE
 from finbot.repo import expenses as expenses_repo
 from finbot.repo import extractions as extractions_repo
 from finbot.repo import messages as messages_repo
@@ -90,6 +91,30 @@ NO_RESPONSE_MODEL_ID = "no-response"
 VOICE_NOT_CONFIGURED_ERROR = "voice_not_configured"
 VOICE_TOO_LONG_ERROR = "voice_too_long"
 
+# Mirrors VOICE_NOT_CONFIGURED_ERROR: set on `messages.last_error` when a
+# photo arrives with `MODEL_VISION` unset (docs/plans/stage-2_5-bank-
+# screenshots.md, R10) — before any download or model call.
+VISION_NOT_CONFIGURED_ERROR = "vision_not_configured"
+
+
+@dataclass(frozen=True)
+class BankSummary:
+    """`bank.BankPlan` plus the two outcomes only the pipeline can know,
+    because they depend on what the database actually did with the planned
+    writes (docs/plans/stage-2_5-bank-screenshots.md, Approach C2):
+
+    - `duplicates` — planned writes whose keyed insert returned `None`
+      (`repo.expenses.create_bank_row`'s own contract): already recorded,
+      by this user, under this exact `(date, time, amount)` key.
+    - `manual_collisions` — non-deleted, non-bank expenses matching one of
+      the rows this round actually wrote, named for the reply but never
+      merged or suppressed (R7): both rows keep existing.
+    """
+
+    plan: bank.BankPlan
+    duplicates: int = 0
+    manual_collisions: tuple[expenses_repo.ExpenseView, ...] = field(default_factory=tuple)
+
 
 @dataclass(frozen=True)
 class ExtractionOutcome:
@@ -110,10 +135,19 @@ class ExtractionOutcome:
     # download or model call, so neither ever produces an `extractions` row.
     voice_not_configured: bool = False
     voice_too_long: bool = False
+    # True only when `MODEL_VISION` is unset (an empty `models` tuple) — a
+    # refusal before any download or model call, mirroring
+    # `voice_not_configured` exactly.
+    vision_not_configured: bool = False
     # The model's own transcript, voice only. `None` for text, and `None`
     # for a voice round that never reached a parsed result (every guard, and
     # any FAILED/INVALID_JSON outcome).
     transcript: str | None = None
+    # Bank-feed rows only (Stage 2.5 Step 2): `None` for text and voice, and
+    # `None` for a bank round that never reached a parsed result (the
+    # vision-not-configured guard, an ImageFetchError, or any FAILED/
+    # INVALID_JSON outcome).
+    bank_summary: BankSummary | None = None
 
 
 def _elapsed_ms(started: float) -> int:
@@ -426,6 +460,122 @@ async def _extract_voice(
     )
 
 
+async def _extract_bank(
+    *,
+    session: AsyncSession,
+    message: Message,
+    llm: LlmClient,
+    catalog: Sequence[CategorySpec],
+    category_ids: Mapping[str, int],
+    models: Sequence[str],
+    max_attempts: int,
+    max_message_attempts: int,
+    anchor_date: date | None,
+    fetch_image: Callable[[], Awaitable[str]] | None,
+) -> ExtractionOutcome:
+    """Mirrors `_extract_voice`'s order exactly (docs/plans/stage-2_5-bank-
+    screenshots.md, Step 2): empty `models` -> `mark_skipped`
+    (`VISION_NOT_CONFIGURED_ERROR`), no download, no call — R10. Then
+    `fetch_image` (an `ImageFetchError` schedules a retry with no
+    `extractions` row: nothing reached a model). Only past that does the
+    shared repair loop ever run, followed by `bank.plan_writes` and the
+    keyed inserts that give Approach C2's dedup guarantee its counters.
+
+    `anchor_date` is `message.created_at` in the household's timezone
+    (Approach B, arrival anchor) — computed by the caller
+    (`adapters/telegram/runner.py`, Stage 2.5 Step 3), never here: this
+    module stays free of `zoneinfo`-vs-storage concerns the same way `today`
+    already is for text and voice.
+    """
+    if not models:
+        # MODEL_VISION is unset: nothing to call, and calling nothing is the
+        # whole point — `Settings.vision_model_candidates` resolves to an
+        # empty tuple for exactly this reason. No download is attempted.
+        await messages_repo.mark_skipped(session, message.id, error=VISION_NOT_CONFIGURED_ERROR)
+        await session.commit()
+        return ExtractionOutcome(status=ExtractionStatus.FAILED, vision_not_configured=True)
+
+    if fetch_image is None or anchor_date is None:
+        raise ValueError(f"photo message {message.id} has no fetch_image/anchor_date")
+
+    try:
+        image_data_url = await fetch_image()
+    except ImageFetchError as exc:
+        # Before any model call: unlike an LlmError, no response was ever
+        # attempted, so there is no `extractions` row to write — only a
+        # reason to try again later, exactly like voice's AudioFetchError
+        # guard.
+        await _schedule_retry(
+            session, message, error=str(exc), max_message_attempts=max_message_attempts
+        )
+        return ExtractionOutcome(status=ExtractionStatus.FAILED)
+
+    request = bank.build_request(image_data_url=image_data_url, catalog=catalog, models=models)
+    round_result = await _run_extraction_round(
+        session=session,
+        message=message,
+        llm=llm,
+        request=request,
+        prompt_version=PROMPT_VERSION_BANK,
+        max_attempts=max_attempts,
+        max_message_attempts=max_message_attempts,
+        parse=bank.parse_content,
+    )
+    if isinstance(round_result, ExtractionStatus):
+        return ExtractionOutcome(status=round_result)
+    result, _response = round_result
+
+    plan = bank.plan_writes(result, anchor=anchor_date)
+
+    expense_ids: list[int] = []
+    drafts: list[ExpenseDraft] = []
+    written_pairs: list[tuple[date, ExpenseDraft]] = []
+    duplicates = 0
+    for write in plan.writes:
+        if write.draft.occurred_at is None:
+            # bank.plan_writes's own contract: every write it returns has
+            # already resolved a concrete date (R4/R5) — see
+            # _create_expenses's identical guard for text/voice.
+            raise AssertionError("bank.plan_writes must resolve every occurred_at to a date")
+        occurred_at = write.draft.occurred_at
+        expense_id = await expenses_repo.create_bank_row(
+            session,
+            message_id=message.id,
+            user_id=message.user_id,
+            category_id=category_ids[write.draft.category],
+            item=write.draft.item,
+            amount=write.draft.amount,
+            occurred_at=occurred_at,
+            bank_txn_key=write.key,
+        )
+        if expense_id is None:
+            # Approach C2: the unique index rejected this row, so it was
+            # already recorded — this is the counter R8 needs, not a SELECT
+            # this code ran itself.
+            duplicates += 1
+            continue
+        expense_ids.append(expense_id)
+        drafts.append(write.draft)
+        written_pairs.append((occurred_at, write.draft))
+
+    manual_collisions = await expenses_repo.manual_duplicate_candidates(
+        session,
+        [(occurred_at, draft.amount) for occurred_at, draft in written_pairs],
+        user_id=message.user_id,
+    )
+
+    await messages_repo.mark_done(session, message.id)
+    await session.commit()
+    return ExtractionOutcome(
+        status=ExtractionStatus.OK,
+        expense_ids=tuple(expense_ids),
+        drafts=tuple(drafts),
+        bank_summary=BankSummary(
+            plan=plan, duplicates=duplicates, manual_collisions=tuple(manual_collisions)
+        ),
+    )
+
+
 async def extract_and_store(
     *,
     session: AsyncSession,
@@ -439,15 +589,23 @@ async def extract_and_store(
     max_message_attempts: int,
     max_voice_seconds: int,
     fetch_audio: Callable[[], Awaitable[bytes]] | None = None,
+    fetch_image: Callable[[], Awaitable[str]] | None = None,
+    anchor_date: date | None = None,
 ) -> ExtractionOutcome:
-    """Routes on `message.kind` (docs/roadmap.md Stage 2). `fetch_audio` is
-    the seam that keeps aiogram and `ffmpeg` out of `core` (CLAUDE.md rule
+    """Routes on `message.kind` (docs/roadmap.md Stage 2; Stage 2.5 adds
+    `PHOTO`). `fetch_audio`/`fetch_image` are the seams that keep aiogram,
+    `ffmpeg` and this project's image-sniffing out of `core` (CLAUDE.md rule
     3): `adapters/telegram/runner.py` is the only caller that ever supplies
-    one, built from `adapters.telegram.audio.fetch_and_convert` bound to a
-    real `Bot` and `file_id` — this module never imports that module, only
-    the `AudioFetchError` it raises (`core.extraction.ports`). `None` for a
-    text message; required to be non-`None` for a voice message once the
-    configured/duration guards below have passed.
+    either, built from `adapters.telegram.audio.fetch_and_convert` /
+    `adapters.telegram.images.fetch_as_data_url` bound to a real `Bot` and
+    `file_id` — this module never imports either adapter module, only the
+    `AudioFetchError`/`ImageFetchError` they raise
+    (`core.extraction.ports`). Each is `None` for the two modalities it does
+    not apply to, and required to be non-`None` once its own modality's
+    configured guard has passed. `anchor_date` is the arrival anchor
+    (Approach B) a photo's date headers resolve against — `message.
+    created_at` in the household's timezone, computed by the caller for the
+    same reason `today` already is.
     """
     if message.kind == MessageKind.VOICE:
         return await _extract_voice(
@@ -462,6 +620,19 @@ async def extract_and_store(
             max_message_attempts=max_message_attempts,
             max_voice_seconds=max_voice_seconds,
             fetch_audio=fetch_audio,
+        )
+    if message.kind == MessageKind.PHOTO:
+        return await _extract_bank(
+            session=session,
+            message=message,
+            llm=llm,
+            catalog=catalog,
+            category_ids=category_ids,
+            models=models,
+            max_attempts=max_attempts,
+            max_message_attempts=max_message_attempts,
+            anchor_date=anchor_date,
+            fetch_image=fetch_image,
         )
     return await _extract_text(
         session=session,

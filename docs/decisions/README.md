@@ -24,3 +24,6 @@ An ADR is never edited to change its decision. A new ADR supersedes it and says 
 | [0014](0014-structured-output-and-the-evals-split.md) | Structured output under a derived schema; the model is measured in `evals/`, not in `pytest` |
 | [0015](0015-voice-always-converts-to-mp3.md) | Every voice note is converted to mp3, unconditionally — amends [0004](0004-openrouter-and-model-routing.md) |
 | [0016](0016-narrow-exception-for-owner-named-voice-samples.md) | A narrow, owner-invoked exception for pulling explicitly named voice samples outside the repo — amends [0009](0009-public-repo-private-eval-data.md) |
+| [0017](0017-only-expense-rows-are-written.md) | Only `expense` rows are written; the other four bank-feed kinds are shown, not stored |
+| [0018](0018-model-reads-the-header-code-owns-the-calendar.md) | The model reads the date header, the code owns the calendar, the weekday is the checksum |
+| [0019](0019-bank-eval-labels-are-as-private-as-its-pixels.md) | A bank-feed eval's labels are as private as its pixels — amends [0009](0009-public-repo-private-eval-data.md), extends [0016](0016-narrow-exception-for-owner-named-voice-samples.md) |

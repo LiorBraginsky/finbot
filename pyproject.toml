@@ -62,8 +62,15 @@ ignore = ["S104"]
 # Every user-facing string the bot ever sends: Ukrainian prose and category
 # labels, same justification as the catalog above.
 "src/finbot/adapters/telegram/render.py" = ["RUF001"]
+# `query.answer(...)` acknowledgement text for the `🗑 Видалити все` callback
+# (docs/plans/stage-2_5-bank-screenshots.md, Step 3) is Ukrainian prose too —
+# same justification as render.py above.
+"src/finbot/adapters/telegram/handlers.py" = ["RUF001"]
 # Asserts the exact Ukrainian/Cyrillic text render.py produces.
 "tests/unit/test_render.py" = ["RUF001"]
+# Asserts the exact Ukrainian text finbot.adapters.telegram.render.
+# render_bank_note produces, same justification as test_render.py above.
+"tests/unit/test_render_bank.py" = ["RUF001"]
 # The currency guard's marker table is Cyrillic words by definition (дол,
 # долар, бакс, євро...), and its comments/docstrings quote them and their
 # Ukrainian near-homographs (долина, європа) to explain what must NOT match
@@ -74,6 +81,19 @@ ignore = ["S104"]
 # Asserts the exact Cyrillic marker table finbot.core.extraction.currency
 # matches and rejects.
 "tests/unit/test_currency.py" = ["RUF001"]
+# The bank-feed calendar's month/weekday tables are Cyrillic words by
+# definition (Ukrainian and Russian genitive month names, weekday
+# abbreviations) — same justification as currency.py above, extended to
+# RUF002/RUF003 for the same reason: the docstrings quote them too.
+"src/finbot/core/extraction/bank_dates.py" = ["RUF001", "RUF002", "RUF003"]
+# Asserts the exact Cyrillic date headers finbot.core.extraction.bank_dates
+# resolves and rejects.
+"tests/unit/test_bank_dates.py" = ["RUF001"]
+# Bank-feed date headers in both the model-output fixtures and the
+# docstrings explaining what they test (a weekday-mismatch case quotes
+# "сб"/"пт" in prose), same justification as bank_dates.py above, extended
+# to RUF002 for the same reason as currency.py.
+"tests/unit/test_evals_bank_scoring.py" = ["RUF001", "RUF002"]
 # BOT_COMMANDS' descriptions are the exact Ukrainian text Telegram shows in
 # the command menu, same justification as the catalog above.
 "src/finbot/adapters/telegram/main.py" = ["RUF001"]
@@ -89,6 +109,16 @@ ignore = ["S104"]
 "tests/unit/test_extraction_voice.py" = ["RUF001"]
 "tests/integration/test_confirmation_flow.py" = ["RUF001"]
 "tests/integration/test_message_repo.py" = ["RUF001"]
+# Bank-feed merchant strings (Ukrainian prose, and the deliberate "differs
+# only by merchant" pin for Approach C2's dedup key), same justification as
+# the catalog above.
+"tests/integration/test_bank_dedup.py" = ["RUF001"]
+# Asserts substrings of the exact Ukrainian note finbot.adapters.telegram.
+# render.render_bank_note produces, same justification as the catalog above.
+"tests/integration/test_bank_flow.py" = ["RUF001"]
+# Asserts the exact Ukrainian `query.answer(...)` text the `delall` handler
+# sends, same justification as the catalog above.
+"tests/integration/test_delete_all_flow.py" = ["RUF001"]
 
 [tool.mypy]
 python_version = "3.12"

@@ -1,0 +1,23 @@
+{
+  "id": "gen-fixture-bank-not-a-feed",
+  "provider": "Google",
+  "model": "google/gemini-3.5-flash-lite",
+  "object": "chat.completion",
+  "created": 1754800400,
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"is_transaction_feed\": false, \"rows\": [{\"date_header\": \"Сьогодні\", \"time\": null, \"merchant\": \"Something\", \"amount\": 99.99, \"kind\": \"expense\", \"category\": \"other\", \"partially_visible\": false}]}"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 1400,
+    "completion_tokens": 40,
+    "total_tokens": 1440,
+    "cost": 0.0017
+  }
+}

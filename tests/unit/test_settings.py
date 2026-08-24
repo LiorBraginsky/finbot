@@ -66,6 +66,29 @@ def test_free_model_voice_raises_validation_error() -> None:
         Settings(**_kwargs(model_voice="qwen/qwen3.7-flash:free"))
 
 
+def test_model_vision_defaults_to_empty_and_candidates_default_to_empty_tuple() -> None:
+    settings = Settings(**_kwargs())
+    assert settings.model_vision == ""
+    assert settings.vision_model_candidates == ()
+
+
+def test_vision_model_candidates_is_just_model_vision_when_no_fallbacks() -> None:
+    settings = Settings(**_kwargs(model_vision="google/gemini-3.5-flash-lite"))
+    assert settings.vision_model_candidates == ("google/gemini-3.5-flash-lite",)
+
+
+def test_vision_model_candidates_appends_the_shared_fallback_list() -> None:
+    settings = Settings(
+        **_kwargs(model_vision="google/gemini-3.5-flash-lite", model_fallbacks="a, b ,")
+    )
+    assert settings.vision_model_candidates == ("google/gemini-3.5-flash-lite", "a", "b")
+
+
+def test_free_model_vision_raises_validation_error() -> None:
+    with pytest.raises(ValidationError):
+        Settings(**_kwargs(model_vision="qwen/qwen3.7-flash:free"))
+
+
 def test_max_voice_seconds_defaults_to_120() -> None:
     settings = Settings(**_kwargs())
     assert settings.max_voice_seconds == 120
