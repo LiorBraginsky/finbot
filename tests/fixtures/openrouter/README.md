@@ -71,6 +71,29 @@ validated against.
   ("доларів"), for the guard that runs on the transcript *after* extraction
   (docs/roadmap.md Stage 2's decision 4), unlike text's, which runs first.
 
+### Bank-feed screenshots (docs/plans/stage-2_5-bank-screenshots.md)
+
+Same envelope shape again; `content` validates against
+`BankExtractionResult` (`is_transaction_feed` plus `rows`). Unlike the text
+and voice fixtures above, these are **not** eligible for
+`--save-raw` refreshing from a real screenshot: a bank feed's real amounts,
+merchants and dates are exactly the private household data ADR-0009 keeps
+out of the repository, and every merchant/amount here is invented, never
+pulled from a real screenshot. See the plan's Reality check (finding 4) and
+ADR-worthy note 2 for the refusal this forces on `evals/run.py`.
+
+- `bank_feed_ok.json` — one `expense` row (Silpo, groceries) plus one
+  `savings` row (a jar) and one `own_transfer` row (a same-owner card),
+  proving Approach A1: only the expense is ever written, and the other two
+  are reported and stored nowhere.
+- `bank_multi_day.json` — two `expense` rows under two different verbatim
+  headers (`Сьогодні`, `Вчора`), for the "a multi-day result produces drafts
+  across two dates in feed order" case.
+- `bank_not_a_feed.json` — `is_transaction_feed: false` with one row that
+  *looks* like a valid expense — Approach E's guard: false means zero drafts
+  regardless of what `rows` contains, closing the hole a photographed
+  receipt would otherwise open before Stage 4 exists.
+
 ## Provenance and refreshing
 
 These initial versions are **hand-written from the documented response
@@ -83,4 +106,8 @@ Step 4 ships `python -m evals.run --save-raw DIR`, which refreshes these
 files with real response bodies from the **synthetic golden cases** in
 `evals/golden/` — never from real household messages (ADR-0009). Refreshing
 is an owner prerequisite, run once a key exists, and the result is committed
-like any other fixture.
+like any other fixture. The three bank fixtures above are the one exception:
+`evals/golden/bank/` holds no synthetic cases (there is no such thing as a
+synthetic bank-feed screenshot), so `--save-raw` must refuse a `--modality
+bank` run mechanically rather than silently writing a real screenshot's
+response body here (Stage 2.5's own verification, Step 4).

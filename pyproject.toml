@@ -97,6 +97,10 @@ ignore = ["S104"]
 "tests/unit/test_extraction_voice.py" = ["RUF001"]
 "tests/integration/test_confirmation_flow.py" = ["RUF001"]
 "tests/integration/test_message_repo.py" = ["RUF001"]
+# Bank-feed merchant strings (Ukrainian prose, and the deliberate "differs
+# only by merchant" pin for Approach C2's dedup key), same justification as
+# the catalog above.
+"tests/integration/test_bank_dedup.py" = ["RUF001"]
 
 [tool.mypy]
 python_version = "3.12"
