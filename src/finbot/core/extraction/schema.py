@@ -14,6 +14,7 @@ import logging
 from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -108,6 +109,138 @@ def text_json_schema(slugs: Sequence[str]) -> dict[str, Any]:
             "expenses": {"type": "array", "items": expense_schema},
         },
         "required": ["expenses"],
+        "additionalProperties": False,
+    }
+
+
+class BankRowKind(StrEnum):
+    """The five wire kinds a bank-feed row can be classified as, plus a sixth,
+    `UNCLASSIFIED`, that the wire schema's `enum` cannot itself produce (see
+    `bank_json_schema` below — its `kind` enum lists only the first five).
+
+    `UNCLASSIFIED` exists for the same reason `ExpenseDraft.
+    _fallback_unknown_category` coerces an unknown slug to `other`: strict
+    mode makes an out-of-enum value near-impossible, but a repaired response
+    or a future looser schema could still produce one, and filing that row as
+    unclassified — reported, written nowhere — beats spending a repair call
+    and losing a whole screenshot.
+    """
+
+    EXPENSE = "expense"
+    INCOME = "income"
+    SAVINGS = "savings"
+    OWN_TRANSFER = "own_transfer"
+    TRANSFER_OUT = "transfer_out"
+    UNCLASSIFIED = "unclassified"
+
+
+_BANK_ROW_WIRE_KINDS: tuple[BankRowKind, ...] = (
+    BankRowKind.EXPENSE,
+    BankRowKind.INCOME,
+    BankRowKind.SAVINGS,
+    BankRowKind.OWN_TRANSFER,
+    BankRowKind.TRANSFER_OUT,
+)
+_BANK_ROW_WIRE_KIND_VALUES: frozenset[str] = frozenset(k.value for k in _BANK_ROW_WIRE_KINDS)
+
+
+class BankRow(BaseModel):
+    """One row of a bank-feed screenshot, as the model reads it. `category`
+    is required by strict mode even for a non-`expense` row and is ignored
+    for those (`## Chosen approach`, stage-2.5 plan) — the model still has to
+    pick something, but nothing downstream reads it unless `kind` is
+    `expense`.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    date_header: str
+    time: str | None
+    merchant: str
+    amount: Decimal
+    kind: BankRowKind
+    category: str
+    partially_visible: bool
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _fallback_unknown_kind(cls, value: Any) -> Any:
+        # Mirrors _fallback_unknown_category below: the wire enum already
+        # makes this near-impossible, so when it happens anyway, coercing to
+        # UNCLASSIFIED is worth more than a repair call. `mode="before"`
+        # because pydantic would otherwise reject an out-of-enum string
+        # before this validator ever ran.
+        if isinstance(value, BankRowKind) or value in _BANK_ROW_WIRE_KIND_VALUES:
+            return value
+        logger.warning(
+            "unknown bank row kind %r from model; coercing to %r",
+            value,
+            BankRowKind.UNCLASSIFIED.value,
+        )
+        return BankRowKind.UNCLASSIFIED
+
+    @field_validator("category")
+    @classmethod
+    def _fallback_unknown_category(cls, value: str) -> str:
+        if value in SLUGS:
+            return value
+        logger.warning("unknown category slug %r from model; coercing to %r", value, FALLBACK_SLUG)
+        return FALLBACK_SLUG
+
+
+class BankExtractionResult(BaseModel):
+    """Stage 2.5's third result shape (`## Chosen approach`): `rows` in the
+    model's own top-to-bottom order, `is_transaction_feed` false meaning the
+    image is not a bank transaction feed at all (Approach E's guard against a
+    photographed receipt running this prompt before Stage 4 exists).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    is_transaction_feed: bool
+    rows: list[BankRow]
+
+
+def bank_json_schema(slugs: Sequence[str]) -> dict[str, Any]:
+    """Hand-built, strict-mode-ready JSON Schema for `BankExtractionResult` —
+    `text_json_schema`'s own docstring explains why hand-built at all, and
+    ADR-0014's proximity-not-abstraction rule is why this is a fully
+    independent literal rather than sharing a helper with `text_json_schema`/
+    `voice_json_schema`.
+
+    `kind.enum` is the five wire values only — `UNCLASSIFIED` is a domain
+    concept `BankRow`'s validator introduces, never something the model is
+    asked or allowed to emit.
+    """
+    row_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "date_header": {"type": "string"},
+            "time": {"type": ["string", "null"]},
+            "merchant": {"type": "string"},
+            "amount": {"type": "number"},
+            "kind": {"type": "string", "enum": [k.value for k in _BANK_ROW_WIRE_KINDS]},
+            "category": {"type": "string", "enum": list(slugs)},
+            "partially_visible": {"type": "boolean"},
+        },
+        "required": [
+            "date_header",
+            "time",
+            "merchant",
+            "amount",
+            "kind",
+            "category",
+            "partially_visible",
+        ],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "is_transaction_feed": {"type": "boolean"},
+            "rows": {"type": "array", "items": row_schema},
+        },
+        "required": ["is_transaction_feed", "rows"],
         "additionalProperties": False,
     }
 

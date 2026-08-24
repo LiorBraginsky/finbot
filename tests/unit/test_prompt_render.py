@@ -14,9 +14,11 @@ import pytest
 
 from finbot.core.categories.catalog import CATALOG
 from finbot.prompts import (
+    PROMPT_VERSION_BANK,
     PROMPT_VERSION_TEXT,
     PROMPT_VERSION_VOICE,
     load,
+    render_bank_prompt,
     render_text_prompt,
     render_voice_prompt,
 )
@@ -83,3 +85,36 @@ def test_render_voice_prompt_leaves_no_placeholder_unfilled() -> None:
 def test_render_voice_prompt_mentions_transcribing_before_extracting() -> None:
     rendered = render_voice_prompt(today=date(2026, 8, 10), catalog=CATALOG)
     assert "transcribe" in rendered.lower()
+
+
+def test_prompt_version_bank_matches_the_shipped_file() -> None:
+    assert PROMPT_VERSION_BANK == "extract_bank.v1"
+    assert "Categories" in load(PROMPT_VERSION_BANK)
+
+
+def test_render_bank_prompt_lists_every_catalog_slug_with_its_emoji() -> None:
+    rendered = render_bank_prompt(catalog=CATALOG)
+    for category in CATALOG:
+        assert category.slug in rendered
+        assert category.emoji in rendered
+        assert category.description in rendered
+
+
+def test_render_bank_prompt_leaves_no_categories_placeholder_unfilled() -> None:
+    rendered = render_bank_prompt(catalog=CATALOG)
+    assert "$categories" not in rendered
+
+
+def test_render_bank_prompt_template_contains_no_today_or_weekday_placeholder() -> None:
+    # R5/Approach B: the model is never told today's date, so it cannot
+    # resolve one — pinned against the raw template file, not only the
+    # rendered output, so a future edit that reintroduces `$today` fails here
+    # even before anyone calls render_bank_prompt with today's date at hand.
+    template = load(PROMPT_VERSION_BANK)
+    assert "$today" not in template
+    assert "$weekday" not in template
+
+
+def test_render_bank_prompt_mentions_a_bank_transaction_feed() -> None:
+    rendered = render_bank_prompt(catalog=CATALOG)
+    assert "bank" in rendered.lower()

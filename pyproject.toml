@@ -74,6 +74,14 @@ ignore = ["S104"]
 # Asserts the exact Cyrillic marker table finbot.core.extraction.currency
 # matches and rejects.
 "tests/unit/test_currency.py" = ["RUF001"]
+# The bank-feed calendar's month/weekday tables are Cyrillic words by
+# definition (Ukrainian and Russian genitive month names, weekday
+# abbreviations) — same justification as currency.py above, extended to
+# RUF002/RUF003 for the same reason: the docstrings quote them too.
+"src/finbot/core/extraction/bank_dates.py" = ["RUF001", "RUF002", "RUF003"]
+# Asserts the exact Cyrillic date headers finbot.core.extraction.bank_dates
+# resolves and rejects.
+"tests/unit/test_bank_dates.py" = ["RUF001"]
 # BOT_COMMANDS' descriptions are the exact Ukrainian text Telegram shows in
 # the command menu, same justification as the catalog above.
 "src/finbot/adapters/telegram/main.py" = ["RUF001"]

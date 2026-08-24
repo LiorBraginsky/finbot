@@ -86,3 +86,15 @@ class AudioFetchError(Exception):
     the seam between the two, exactly as `LlmClient` is for the model call
     itself: `core` depends on the exception type, never on what raises it.
     """
+
+
+class ImageFetchError(Exception):
+    """Downloading a bank-feed screenshot failed, before any model call was
+    ever made — a Telegram download failure, an oversized file, or content
+    that does not sniff as a supported image format. Raised by
+    `adapters.telegram.images` (Stage 2.5 Step 2), the only place in this
+    project that touches aiogram's download API for a photo, and caught by
+    `core.extraction.pipeline`, which must never import that module directly
+    (CLAUDE.md rule 3). Parallel to `AudioFetchError` in every respect: the
+    seam is the exception type, never what raises it.
+    """
