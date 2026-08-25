@@ -146,7 +146,16 @@ it has.*
   above the 12-row keyboard cap
 
 **Done when:** one day's screenshot lands as the right expenses, with savings, transfers
-and incoming money visibly skipped rather than silently dropped, and re-sending the same
+a*2026-08-24: the eval ran over four image-capable candidates (3 cases x 2 repeats) and
+`MODEL_VISION=google/gemini-3.5-flash-lite` is chosen and deployed — the only one clearing
+both pre-registered gates. The cheapest candidate wrote non-expenses as spending in two
+runs of six; the deliberately pricier control read amounts worse than the cheap model and
+took 25 s at p95. Migration `0004` is applied in production. See `docs/journal.md`'s top
+entry for the table. **What remains is the criterion itself:** one day's screenshot landing
+as the right expenses with savings and transfers visibly skipped, and a re-send recording
+nothing new. No gate can prove that, and it has not been tried.*
+
+nd incoming money visibly skipped rather than silently dropped, and re-sending the same
 screenshot records nothing new — **no gate can prove this, and it has not been tried.**
 
 *Software complete: bank-feed extraction (`core/extraction/bank.py`, its own hand-built

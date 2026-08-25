@@ -50,6 +50,26 @@ Two splits this stage leaned on. First, the model transcribes a date header verb
 
 ---
 
+## 2026-08-24 · stage 2.5 · lior
+**Did:** labelled the three spike screenshots into a private case set (24 rows, 8 of them expenses), ran the bank eval over four image-capable candidates, set `MODEL_VISION=google/gemini-3.5-flash-lite`, and deployed Stage 2.5 (migration `0004`).
+**Hit:** the pre-registered gates disqualified three of four candidates, and none of them for the reason one would guess — the cheapest wrote non-expenses as spending in two runs of six, the deliberately pricier control read amounts *worse* than the cheap model (4/6) with a p95 of 25 s, and the third timed out.
+**Next:** send one real screenshot in the group; that, not a green gate, is Stage 2.5's done-criterion, together with re-sending it and seeing nothing new recorded.
+**Open:** `category_exact` scored 2/6 for both surviving models, but the metric is not trustworthy on this set — three merchants in it have no honest slug among the thirteen and were labelled `other` by judgment, so the disagreement is as likely mine as the model's. The criterion already forbids choosing on category; Stage 5 is where the taxonomy gap belongs.
+
+| model | schema_ok | no_false_expense | count_exact | amount_exact | date_exact | mean cost (USD) | p50 (ms) | p95 (ms) |
+|---|---|---|---|---|---|---|---|---|
+| google/gemini-3.5-flash-lite | 6/6 | 6/6 | 6/6 | 6/6 | 6/6 | 0.002252 | 2514 | 3621 |
+| google/gemini-3.6-flash | 6/6 | 6/6 | 4/6 | 4/6 | 4/6 | 0.012254 | 11864 | 25008 |
+| qwen/qwen3.5-flash-02-23 | 5/6 | 5/6 | 3/6 | 3/6 | 3/6 | 0.001227 | 39279 | 57754 |
+| mistralai/mistral-small-3.2-24b-instruct | 6/6 | 4/6 | 2/6 | 0/6 | 2/6 | 0.000334 | 3601 | 4358 |
+
+**Chosen:** `MODEL_VISION=google/gemini-3.5-flash-lite` — the only candidate clearing both gates, and the same model already serving text and voice. A screenshot costs $0.00225 against a voice note's $0.00049 and a text message's $0.00028; one screenshot a day is about seven cents a month.
+
+## Learning notes
+Gate 1 earned its place on the first run it was ever applied to. `mistralai/mistral-small-3.2-24b-instruct` is the cheapest image-capable model in the filtered catalogue and would have been the obvious pick on price — and in two runs of six it classified a row that only *moved* money as money *spent*, which is the one error class this stage exists to prevent and the one no amount-accuracy metric would have caught, since the amount it wrote was correct. Gate 2 then disqualified the expensive control, which is the more instructive half: `gemini-3.6-flash` costs 5.4x more, is 4.7x slower at p95, and read the amounts *worse* (4/6 against 6/6). "Pricier is more accurate" is an assumption, and this is the second stage running where measuring it turned out to matter more than reasoning about it — the same thing happened on text, where the 116x-pricier control tied on every metric and lost on latency. The corollary for the eval design: a control arm is not there to win, it is there to make "the cheap one was good enough" a measurement rather than a hope.
+
+---
+
 ## 2026-08-24 · stage 2 · lior
 **Did:** ran the voice eval on five real recordings — 2 models x 5 cases x 2 repeats — and set `MODEL_VOICE=google/gemini-3.5-flash-lite`, then deployed Stage 2 (migration `0003`) to the VPS.
 **Hit:** the samples had to be identified before they could be labelled: seven voice notes existed with no record of which phrase was in which, so each was transcribed through the production path first — used for identification only, never as ground truth, which came from the agreed script.
