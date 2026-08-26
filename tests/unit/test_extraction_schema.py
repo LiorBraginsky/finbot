@@ -20,8 +20,10 @@ from pydantic import ValidationError
 
 from finbot.core.categories.catalog import CATALOG
 from finbot.core.extraction.schema import (
+    ExpenseDraft,
     ExtractionResult,
     VoiceExtractionResult,
+    bank_json_schema,
     text_json_schema,
     voice_json_schema,
 )
@@ -185,3 +187,67 @@ def test_a_voice_instance_missing_transcript_is_rejected() -> None:
     instance = {"expenses": []}
     with pytest.raises(ValidationError):
         VoiceExtractionResult.model_validate(instance)
+
+
+# --- suggested_category on the wire (ADR-0021) ----------------------------
+
+
+def test_every_schema_requires_suggested_category_and_allows_null() -> None:
+    """Strict mode requires *all* properties to be listed in `required`, so
+    "optional" is expressed as a nullable type, never as an absent key. All
+    three modalities carry it, because all three can file a row under `other`.
+    """
+    slugs = [c.slug for c in CATALOG]
+    nodes = [
+        text_json_schema(slugs)["properties"]["expenses"]["items"],
+        voice_json_schema(slugs)["properties"]["expenses"]["items"],
+        bank_json_schema(slugs)["properties"]["rows"]["items"],
+    ]
+
+    for node in nodes:
+        assert node["properties"]["suggested_category"] == {"type": ["string", "null"]}
+        assert "suggested_category" in node["required"]
+        assert set(node["required"]) == set(node["properties"])
+
+
+def test_a_response_without_the_key_still_parses() -> None:
+    """Backward compatibility, stated as a test rather than assumed: the
+    fixtures recorded before this field existed must keep parsing, or every
+    one of them would have to be rewritten to prove anything about the parser.
+    """
+    result = ExtractionResult.model_validate(
+        {"expenses": [{"item": "хліб", "amount": 50, "category": "groceries"}]}
+    )
+
+    assert result.expenses[0].suggested_category is None
+
+
+@pytest.mark.parametrize("raw", ["", "   ", None])
+def test_an_empty_proposal_normalises_to_none(raw: str | None) -> None:
+    """A model with nothing to propose returns `""` about as often as `null`,
+    because the schema requires the key. Collapsing both here means the
+    pipeline tests one condition, not three.
+    """
+    draft = ExpenseDraft.model_validate(
+        {"item": "хліб", "amount": 50, "category": "other", "suggested_category": raw}
+    )
+
+    assert draft.suggested_category is None
+
+
+def test_a_proposal_is_stripped_and_truncated_to_the_column_width() -> None:
+    """`categories.label` is `String(64)`. Truncating beats rejecting: losing
+    the proposal is worse than an over-long label, the same trade-off
+    `_clean_item` makes for `item`.
+    """
+    draft = ExpenseDraft.model_validate(
+        {
+            "item": "щось",
+            "amount": 50,
+            "category": "other",
+            "suggested_category": "  " + "Д" * 200 + "  ",
+        }
+    )
+
+    assert draft.suggested_category is not None
+    assert len(draft.suggested_category) == 64

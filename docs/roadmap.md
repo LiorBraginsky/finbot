@@ -182,6 +182,9 @@ Three deferrals this stage names rather than actions:
   a bank-feed screenshot, both `MessageKind.PHOTO`, choose which prompt actually runs.
 - **Stage 5 gains a candidate category.** The spike's screenshots showed an education service
   landing in `other` for want of an `education` slot in the thirteen-category catalog.
+  *Closed differently than expected:* rather than adding a fourteenth slug by hand,
+  ADR-0021 made the taxonomy something the household extends with a button. The candidate
+  is now proposed by the model on the next such charge.
 - **Stage 6 owns date and amount editing** — already recorded there as a deferral, and
   the only real remedy for this stage's one known-wrong case: a screenshot sent the day
   after it was taken resolves `Сьогодні`/`Вчора` against the wrong arrival time and lands
@@ -227,15 +230,30 @@ whether `message.document` with an image MIME type gets a schema slot.
 
 ---
 
-## ⬜ Stage 5 — Category proposals
+## 🚧 Stage 5 — Category proposals
 
-- Model returns `proposed_category` when nothing fits, never invents silently
-- Confirmation offers *Create "Pets"?* / *Put in "Other"*
-- Duplicate check against existing categories before creating
-- Rejected proposals are remembered so they are not offered again
+Brought forward from "deliberately late" and mostly shipped, because the real data
+answered the question this stage was waiting for: twelve were *not* enough.
+`category_exact` sits at 6/15 on the private bank set and every miss is a merchant with
+no honest slug — the `other` pile is the largest line in a report of exactly the spending
+worth seeing. See
+[ADR-0021](decisions/0021-categories-are-proposed-by-the-model-created-by-one-tap.md).
 
-*Deliberately late: first find out on real data which categories are actually missing.
-Finding out that twelve were enough is the best possible outcome.*
+- ✅ Model returns `suggested_category` when nothing fits, never invents silently — and
+  never on a row it already categorised confidently
+- ✅ The ✏️ picker offers `➕ Створити «Освіта»`; one tap creates the category and files
+  the row under it, in one transaction
+- ✅ Duplicate check before creating: the label is slugified deterministically, so a
+  second proposal reuses the pending row, and a proposal that lands on a seeded slug
+  creates nothing
+- ✅ The model's own `category` enum never grows — the prompt and the strict schema stay
+  built from a constant, so `evals/` results stay comparable across runs
+- ⬜ Rejected proposals are remembered so they are not offered again. Today a `suggested`
+  row simply stays suggested and its ➕ button reappears on the next ✏️ tap; a `rejected`
+  status and a "Ні, в «Інше»" button are what close this
+- ⬜ Merging two categories (`categories.merged_into_id` exists and is unused)
+- ⬜ A voice note proposes nothing — `extract_voice.v1` deliberately omits the rule, since
+  adding it cost `transcript_ok` two cases in ten (ADR-0021's Consequences)
 
 ---
 

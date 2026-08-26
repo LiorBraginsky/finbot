@@ -36,7 +36,6 @@ per test as well as once per process — each call needs its own instance.
 """
 
 import logging
-from collections.abc import Sequence
 from datetime import datetime
 from typing import cast
 from zoneinfo import ZoneInfo
@@ -58,16 +57,14 @@ from finbot.adapters.telegram.keyboards import category_keyboard, confirmation_k
 from finbot.adapters.telegram.render import (
     CALLBACK_FAILURE_REPLY,
     HELP_TEXT,
-    ConfirmationLine,
     render_confirmation,
     render_report,
+    to_confirmation_lines,
 )
-from finbot.core.categories.catalog import CATALOG
 from finbot.core.models import MessageKind
 from finbot.core.reporting.periods import Period
 from finbot.core.reporting.periods import resolve as resolve_period
 from finbot.repo import categories, corrections, expenses, messages, reports, users
-from finbot.repo.expenses import ExpenseView
 
 logger = logging.getLogger(__name__)
 
@@ -82,25 +79,6 @@ async def _corrector_id(session: AsyncSession, sender: User) -> int:
     message senders.
     """
     return await users.get_or_create(session, sender.id, sender.full_name)
-
-
-def _to_lines(views: Sequence[ExpenseView]) -> list[ConfirmationLine]:
-    """`ExpenseView`s, in `message_id` order, numbered by that fixed order —
-    see `ConfirmationLine`'s docstring on why the number never changes once
-    assigned.
-    """
-    return [
-        ConfirmationLine(
-            index=index,
-            expense_id=view.id,
-            item=view.item,
-            amount=view.amount,
-            category_slug=view.category_slug,
-            occurred_at=view.occurred_at,
-            deleted=view.deleted,
-        )
-        for index, view in enumerate(views, start=1)
-    ]
 
 
 def _message_ref(query: CallbackQuery) -> MaybeInaccessibleMessageUnion:
@@ -144,7 +122,7 @@ async def _rerender_group(
     is rendering, not validating that invariant.
     """
     views = await expenses.siblings(session, message_id)
-    lines = _to_lines(views)
+    lines = to_confirmation_lines(views)
     today = datetime.now(tz=tz).date()
     ref = _message_ref(query)
     source = await messages.get(session, message_id)
@@ -241,9 +219,18 @@ def build_router(tz: ZoneInfo) -> Router:
         query: CallbackQuery, callback_data: ExpenseAction, session: AsyncSession, bot: Bot
     ) -> None:
         try:
-            category_ids = await categories.by_slug(session)
+            # The picker needs this expense's pending proposal (ADR-0021), so
+            # it reads the row itself rather than only the category list.
+            expense = await expenses.get(session, callback_data.expense_id)
+            suggestion = (
+                await categories.get_view(session, expense.suggested_category_id)
+                if expense is not None and expense.suggested_category_id is not None
+                else None
+            )
             keyboard: InlineKeyboardMarkup = category_keyboard(
-                callback_data.expense_id, CATALOG, category_ids
+                callback_data.expense_id,
+                await categories.active_views(session),
+                suggestion=suggestion,
             )
             ref = _message_ref(query)
             try:
@@ -292,8 +279,18 @@ def build_router(tz: ZoneInfo) -> Router:
                 await query.answer(CALLBACK_FAILURE_REPLY)
                 return
 
+            corrected_by = await _corrector_id(session, sender)
+            # A tap on `➕ Створити «…»` packs the same callback as any other
+            # category button; the only difference is that its target is still
+            # `suggested`. Approving here rather than in a fourth callback
+            # type means "create it" and "file this row under it" cannot end
+            # up half-done. Idempotent: `approve` returns False for a category
+            # that is already active, which is what a redelivered tap sends.
+            approved = await categories.approve(
+                session, callback_data.category_id, created_by=corrected_by
+            )
+
             if expense.category_id != callback_data.category_id:
-                corrected_by = await _corrector_id(session, sender)
                 await corrections.record(
                     session,
                     expense_id=expense.id,
@@ -302,6 +299,11 @@ def build_router(tz: ZoneInfo) -> Router:
                     corrected_by=corrected_by,
                 )
                 await expenses.set_category(session, expense.id, callback_data.category_id)
+                await session.commit()
+            elif approved:
+                # The category was created but the row already pointed at it —
+                # possible only if a caller assigned it before approval. The
+                # approval still has to be committed.
                 await session.commit()
             # else: redelivered tap setting the same category — a no-op.
 

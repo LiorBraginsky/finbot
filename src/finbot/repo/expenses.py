@@ -17,23 +17,43 @@ from decimal import Decimal
 from sqlalchemy import select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from finbot.repo.models import Category, Expense
+
+# `expenses` joins `categories` twice — once for the row's own category and
+# once for the one the model proposed for it (`suggested_category_id`) — so
+# the second needs an alias. `outerjoin`, because the proposal is almost
+# always absent.
+_Suggested = aliased(Category, name="suggested_category")
 
 
 @dataclass(frozen=True)
 class ExpenseView:
-    """One expense as the Telegram adapter needs to render it: the category
-    *slug*, not its numeric id, so `adapters/telegram/render.py` never has
-    to know about `categories.id`.
+    """One expense as the Telegram adapter needs to render it: the category's
+    slug, label and emoji, never its numeric id, so
+    `adapters/telegram/render.py` never has to know about `categories.id`.
+
+    The label and emoji are joined in rather than looked up in a constant.
+    They used to be `render.CATEGORY_LABELS`, which worked only while every
+    category was known at import time; an owner-created one (ADR-0021) has no
+    entry there and never can, so presentation follows the row.
+
+    `suggested_*` describes the category the model *proposed* for this row and
+    nobody has approved yet — `None` on almost every expense, and what the ➕
+    button in the ✏️ picker is built from.
     """
 
     id: int
     item: str
     amount: Decimal
     category_slug: str
+    category_label: str
+    category_emoji: str
     occurred_at: date
     deleted: bool
+    suggested_category_id: int | None = None
+    suggested_label: str | None = None
 
 
 async def create(
@@ -45,6 +65,7 @@ async def create(
     item: str,
     amount: Decimal,
     occurred_at: date,
+    suggested_category_id: int | None = None,
 ) -> int:
     """Insert one `expenses` row, in UAH, and return its id.
 
@@ -63,6 +84,7 @@ async def create(
         fx_rate=Decimal("1"),
         fx_rate_date=occurred_at,
         occurred_at=occurred_at,
+        suggested_category_id=suggested_category_id,
     )
     session.add(expense)
     await session.flush()
@@ -79,6 +101,7 @@ async def create_bank_row(
     amount: Decimal,
     occurred_at: date,
     bank_txn_key: str,
+    suggested_category_id: int | None = None,
 ) -> int | None:
     """Insert one bank-feed row, or do nothing if `(user_id, bank_txn_key)`
     already exists — the database-enforced half of Approach C2's dedup
@@ -110,6 +133,7 @@ async def create_bank_row(
             fx_rate_date=occurred_at,
             occurred_at=occurred_at,
             bank_txn_key=bank_txn_key,
+            suggested_category_id=suggested_category_id,
         )
         .on_conflict_do_nothing(index_elements=[Expense.user_id, Expense.bank_txn_key])
         .returning(Expense.id)
@@ -144,10 +168,15 @@ async def manual_duplicate_candidates(
             Expense.item,
             Expense.amount,
             Category.name.label("category_slug"),
+            Category.label.label("category_label"),
+            Category.emoji.label("category_emoji"),
             Expense.occurred_at,
             Expense.deleted_at,
+            Expense.suggested_category_id,
+            _Suggested.label.label("suggested_label"),
         )
         .join(Category, Category.id == Expense.category_id)
+        .outerjoin(_Suggested, _Suggested.id == Expense.suggested_category_id)
         .where(
             Expense.user_id == user_id,
             Expense.deleted_at.is_(None),
@@ -163,8 +192,12 @@ async def manual_duplicate_candidates(
             item=row.item,
             amount=row.amount,
             category_slug=row.category_slug,
+            category_label=row.category_label,
+            category_emoji=row.category_emoji,
             occurred_at=row.occurred_at,
             deleted=row.deleted_at is not None,
+            suggested_category_id=row.suggested_category_id,
+            suggested_label=row.suggested_label,
         )
         for row in rows
     ]
@@ -186,10 +219,15 @@ async def siblings(session: AsyncSession, message_id: int) -> list[ExpenseView]:
             Expense.item,
             Expense.amount,
             Category.name.label("category_slug"),
+            Category.label.label("category_label"),
+            Category.emoji.label("category_emoji"),
             Expense.occurred_at,
             Expense.deleted_at,
+            Expense.suggested_category_id,
+            _Suggested.label.label("suggested_label"),
         )
         .join(Category, Category.id == Expense.category_id)
+        .outerjoin(_Suggested, _Suggested.id == Expense.suggested_category_id)
         .where(Expense.message_id == message_id)
         .order_by(Expense.id)
     )
@@ -200,8 +238,12 @@ async def siblings(session: AsyncSession, message_id: int) -> list[ExpenseView]:
             item=row.item,
             amount=row.amount,
             category_slug=row.category_slug,
+            category_label=row.category_label,
+            category_emoji=row.category_emoji,
             occurred_at=row.occurred_at,
             deleted=row.deleted_at is not None,
+            suggested_category_id=row.suggested_category_id,
+            suggested_label=row.suggested_label,
         )
         for row in rows
     ]

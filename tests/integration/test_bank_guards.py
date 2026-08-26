@@ -23,6 +23,7 @@ from finbot.core.models import ExtractionStatus, IncomingMessage, MessageKind, M
 from finbot.repo import categories, messages, users
 from finbot.repo.models import Extraction, Message
 from tests.support.fake_llm import FakeLlmClient
+from tests.support.ids import stable_update_id
 
 _ANCHOR = date(2026, 8, 24)
 _MODELS = ("google/gemini-3.5-flash-lite", "google/gemini-3.6-flash")
@@ -33,7 +34,7 @@ async def _claimed_photo_message(session: AsyncSession, *, file_id: str = "photo
     why the row is flipped to `pending` by hand here.
     """
     incoming = IncomingMessage(
-        telegram_update_id=hash(file_id) & 0x7FFFFFFF,
+        telegram_update_id=stable_update_id(file_id),
         telegram_message_id=1,
         chat_id=-1001111111111,
         telegram_user_id=444444444,

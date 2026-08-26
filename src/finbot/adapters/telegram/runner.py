@@ -17,8 +17,8 @@ lands relative to `bot_message_id` being stamped, because the buttons carry
 import asyncio
 import contextlib
 import logging
-from collections.abc import Awaitable, Callable, Sequence
-from datetime import UTC, date, datetime
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from functools import partial
 
 from aiogram import Bot
@@ -33,9 +33,9 @@ from finbot.adapters.telegram.render import (
     PROCESSING_FAILED_REPLY,
     VISION_NOT_CONFIGURED_REPLY,
     VOICE_NOT_CONFIGURED_REPLY,
-    ConfirmationLine,
     render_bank_note,
     render_confirmation,
+    to_confirmation_lines,
     transcript_line,
     voice_too_long_reply,
 )
@@ -43,37 +43,11 @@ from finbot.config import Settings
 from finbot.core.categories.catalog import CATALOG
 from finbot.core.extraction.pipeline import ExtractionOutcome, backoff_seconds, extract_and_store
 from finbot.core.extraction.ports import LlmClient
-from finbot.core.extraction.schema import ExpenseDraft
 from finbot.core.models import ExtractionStatus, MessageKind, MessageStatus
 from finbot.repo import categories, expenses, messages
 from finbot.repo.models import Message
 
 logger = logging.getLogger(__name__)
-
-
-def _confirmation_lines(
-    outcome_expense_ids: Sequence[int], outcome_drafts: Sequence[ExpenseDraft], *, today: date
-) -> list[ConfirmationLine]:
-    """Numbers each line by its fixed position in the model's own output
-    order — the same order `expense_ids` and `drafts` share, since
-    `extract_and_store` appends to both from the same loop.
-    """
-    return [
-        ConfirmationLine(
-            index=index,
-            expense_id=expense_id,
-            item=draft.item,
-            amount=draft.amount,
-            category_slug=draft.category,
-            # extract_and_store's own contract: resolve_dates leaves every
-            # draft with a concrete date, so `draft.occurred_at or today` is
-            # belt-and-braces, never load-bearing.
-            occurred_at=draft.occurred_at or today,
-        )
-        for index, (expense_id, draft) in enumerate(
-            zip(outcome_expense_ids, outcome_drafts, strict=True), start=1
-        )
-    ]
 
 
 def _fetch_audio_for(
@@ -134,7 +108,10 @@ async def _send_bank_reply(
     if not outcome.expense_ids:
         return
 
-    lines = _confirmation_lines(outcome.expense_ids, outcome.drafts, today=anchor)
+    # Built from the rows that were written, not from the model's drafts:
+    # a line now carries its category's label, emoji and pending proposal,
+    # and only the database has those (see `to_confirmation_lines`).
+    lines = to_confirmation_lines(await expenses.siblings(session, message.id))
     sent = await bot.send_message(
         chat_id=message.chat_id,
         text=render_confirmation(lines, today=anchor),
@@ -234,7 +211,7 @@ async def _process_claimed(
             await bot.send_message(chat_id=message.chat_id, text=reply)
             return
 
-        lines = _confirmation_lines(outcome.expense_ids, outcome.drafts, today=today)
+        lines = to_confirmation_lines(await expenses.siblings(session, message.id))
         sent = await bot.send_message(
             chat_id=message.chat_id,
             text=render_confirmation(lines, today=today, transcript=outcome.transcript),

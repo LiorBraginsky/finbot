@@ -49,8 +49,14 @@ its own evaluation dataset.
 
 - Other users, sharing, or accounts beyond the two people in the group
 - Budgets, limits, alerts, and financial advice
-- Bank or card integrations
-- Income, savings, investments, debt tracking
+- Bank or card integrations — no API, no Open Banking, no credentials. Reading a
+  screenshot the owner chose to send is a capture modality like a voice note, not an
+  integration: nothing connects to a bank and nothing is pulled
+- Income, savings, investments, debt tracking. A bank-feed row of one of those kinds is
+  *reported* so the owner can see it was seen, and stored nowhere — with two exceptions
+  ADR-0020 argues for by name: a cash withdrawal and an outgoing transfer are money that
+  left the account and that no later row will ever account for, so they are recorded as
+  spending under an honest "we don't know where it went"
 - Anything resembling accounting
 
 If it is not "record what was spent, then show me what was spent", it does not belong

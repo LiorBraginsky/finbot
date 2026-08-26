@@ -29,6 +29,7 @@ from finbot.repo.engine import create_sessionmaker
 from finbot.repo.models import Expense, Message
 from tests.support.fake_llm import FakeLlmClient
 from tests.support.fake_session import FakeSession
+from tests.support.ids import stable_update_id
 from tests.support.updates import ALLOWED_USER_ID, CHAT_ID
 
 _FIXTURES_DIR = Path(__file__).parents[1] / "fixtures" / "openrouter"
@@ -51,7 +52,7 @@ def _load_fixture(name: str) -> str:
 
 async def _seed_pending_message(session: AsyncSession, raw_text: str) -> int:
     incoming = IncomingMessage(
-        telegram_update_id=abs(hash(raw_text)) % 1_000_000_000,
+        telegram_update_id=stable_update_id(raw_text),
         telegram_message_id=1,
         chat_id=CHAT_ID,
         telegram_user_id=ALLOWED_USER_ID,

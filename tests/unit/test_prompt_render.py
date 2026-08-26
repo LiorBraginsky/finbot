@@ -25,7 +25,7 @@ from finbot.prompts import (
 
 
 def test_prompt_version_text_matches_the_shipped_file() -> None:
-    assert PROMPT_VERSION_TEXT == "extract_text.v1"
+    assert PROMPT_VERSION_TEXT == "extract_text.v2"
     # load() must not raise: the file backing this version must exist.
     assert "Categories" in load(PROMPT_VERSION_TEXT)
 
@@ -88,7 +88,7 @@ def test_render_voice_prompt_mentions_transcribing_before_extracting() -> None:
 
 
 def test_prompt_version_bank_matches_the_shipped_file() -> None:
-    assert PROMPT_VERSION_BANK == "extract_bank.v2"
+    assert PROMPT_VERSION_BANK == "extract_bank.v3"
     assert "Categories" in load(PROMPT_VERSION_BANK)
 
 
@@ -118,3 +118,16 @@ def test_render_bank_prompt_template_contains_no_today_or_weekday_placeholder() 
 def test_render_bank_prompt_mentions_a_bank_transaction_feed() -> None:
     rendered = render_bank_prompt(catalog=CATALOG)
     assert "bank" in rendered.lower()
+
+
+def test_only_the_text_and_bank_prompts_ask_for_a_category_proposal() -> None:
+    """ADR-0021's measured trade-off, pinned so it cannot be "tidied up" into
+    consistency: the voice prompt deliberately never mentions
+    `suggested_category`, because asking for it there cost `transcript_ok`
+    two cases in ten while gaining nothing the other two channels do not
+    already give. The wire schema still carries the field on all three (strict
+    mode requires it) — the model simply returns `null` for voice.
+    """
+    assert "suggested_category" in load(PROMPT_VERSION_TEXT)
+    assert "suggested_category" in load(PROMPT_VERSION_BANK)
+    assert "suggested_category" not in load(PROMPT_VERSION_VOICE)

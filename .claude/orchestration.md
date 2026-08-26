@@ -31,6 +31,15 @@ mypy, and each is binding in exactly the same way:
 | `tests/integration/test_categories_seed.py` | the seeded categories equal the catalog |
 | `test_main.py::test_allowed_updates_matches_registered_handlers` | Telegram is asked for exactly the update types the router handles |
 | `test_main.py::test_no_global_error_handler_is_registered` | no `dp.errors` handler, which would void ADR-0013's delivery guarantee |
+| `tests/unit/test_evals_paths.py` | ADR-0019 — a bank golden set's `--cases`/`--images-dir` must resolve outside this repository |
+| `tests/unit/test_evals_bank.py::test_save_raw_is_refused_for_the_bank_modality` | `--save-raw` cannot write a real screenshot's response body into `tests/fixtures/` |
+| `tests/unit/test_bank_key.py` | ADR-0018 §6 — `bank_txn_key` normalises `time`, so two reads of one screenshot cannot mint two keys |
+| `tests/unit/test_bank_plan.py::test_the_write_decision_does_not_depend_on_skipped_kinds_membership` | ADR-0017/0020 — the write decision is a whitelist; a new `BankRowKind` cannot fall through to being recorded as spending |
+| `tests/unit/test_bank_plan.py::test_every_forced_category_slug_is_a_real_seeded_category` | ADR-0020 — every code-assigned category exists as a row, so the pipeline cannot `KeyError` mid-screenshot |
+| `tests/unit/test_render_bank.py::test_every_skipped_kind_has_a_label_and_a_place_in_the_order` | a skipped kind without a Ukrainian label would raise `KeyError` while replying, after the money was written |
+| `tests/unit/test_prompt_render.py::test_only_the_text_and_bank_prompts_ask_for_a_category_proposal` | ADR-0021 — the voice prompt's omission is a measured trade-off, not an inconsistency to tidy up |
+| `tests/unit/test_slugify.py` | ADR-0021 — `slugify_category` is deterministic and total; it is a category's identity across proposals |
+| `tests/unit/test_stable_update_ids.py` | no test derives a `telegram_update_id` from `hash()` — randomised per process, so a fixture-id collision fails one run in many and passes on rerun |
 
 **Do not delete or weaken one of these because it looks like an odd test.** Each replaces
 a lint rule this project cannot express, and each exists because the rule it guards was

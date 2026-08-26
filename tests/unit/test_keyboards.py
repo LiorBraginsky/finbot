@@ -12,9 +12,14 @@ including past `MAX_CONFIRMATION_ROWS`, where every per-row button drops.
 from datetime import date
 from decimal import Decimal
 
-from finbot.adapters.telegram.callbacks import ExpenseAction, MessageAction
-from finbot.adapters.telegram.keyboards import MAX_CONFIRMATION_ROWS, confirmation_keyboard
+from finbot.adapters.telegram.callbacks import ExpenseAction, MessageAction, SetCategory
+from finbot.adapters.telegram.keyboards import (
+    MAX_CONFIRMATION_ROWS,
+    category_keyboard,
+    confirmation_keyboard,
+)
 from finbot.adapters.telegram.render import ConfirmationLine
+from finbot.repo.categories import CategoryView
 
 _TODAY = date(2026, 8, 24)
 
@@ -26,6 +31,8 @@ def _line(index: int, *, deleted: bool = False) -> ConfirmationLine:
         item=f"item{index}",
         amount=Decimal("10.00"),
         category_slug="groceries",
+        category_label="Продукти",
+        category_emoji="🛒",
         occurred_at=_TODAY,
         deleted=deleted,
     )
@@ -122,3 +129,85 @@ def test_edit_and_delete_buttons_are_unaffected_by_delete_all_id() -> None:
     edit_button, delete_button = keyboard.inline_keyboard[0]
     assert edit_button.callback_data == ExpenseAction(action="edit", expense_id=101).pack()
     assert delete_button.callback_data == ExpenseAction(action="del", expense_id=101).pack()
+
+
+# --- The category picker and its ➕ row (ADR-0021) ------------------------
+
+
+def _cat(id_: int, slug: str, label: str, *, status: str = "active") -> CategoryView:
+    return CategoryView(id=id_, slug=slug, label=label, emoji="🗂", status=status)
+
+
+def test_the_picker_labels_every_button_from_the_rows_own_label_and_emoji() -> None:
+    """Not from a constant keyed on the slug: an owner-created category exists
+    only in the database, so a lookup would raise `KeyError` on exactly the
+    category this feature adds.
+    """
+    categories = [_cat(1, "groceries", "Продукти"), _cat(99, "osvita", "Освіта")]
+
+    keyboard = category_keyboard(500, categories)
+
+    texts = [button.text for row in keyboard.inline_keyboard for button in row]
+    assert "🗂 Освіта" in texts
+    assert "🗂 Продукти" in texts
+
+
+def test_a_pending_suggestion_adds_a_create_row_above_the_back_row() -> None:
+    suggestion = _cat(99, "osvita", "Освіта", status="suggested")
+
+    keyboard = category_keyboard(500, [_cat(1, "groceries", "Продукти")], suggestion=suggestion)
+
+    rows = keyboard.inline_keyboard
+    assert rows[-1][0].text == "← Назад"
+    create_row = rows[-2]
+    assert len(create_row) == 1
+    assert create_row[0].text == "➕ Створити «Освіта»"
+
+
+def test_the_create_button_packs_the_same_callback_as_any_category_button() -> None:
+    """One callback type, one handler: approving the category and filing the
+    row under it cannot end up half-done, and no fourth `CallbackData` exists
+    to keep in sync.
+    """
+    suggestion = _cat(99, "osvita", "Освіта", status="suggested")
+
+    keyboard = category_keyboard(500, [], suggestion=suggestion)
+
+    assert (
+        keyboard.inline_keyboard[0][0].callback_data
+        == SetCategory(expense_id=500, category_id=99).pack()
+    )
+
+
+def test_no_create_row_when_there_is_no_suggestion() -> None:
+    keyboard = category_keyboard(500, [_cat(1, "groceries", "Продукти")])
+
+    texts = [button.text for row in keyboard.inline_keyboard for button in row]
+    assert not any(text.startswith("➕") for text in texts)
+
+
+def test_no_create_row_for_a_suggestion_that_is_already_active() -> None:
+    """Defence against a caller that passes the wrong thing: an active
+    category is already in the list above, so offering to "create" it would
+    be a duplicate button for an existing row.
+    """
+    keyboard = category_keyboard(
+        500, [_cat(1, "groceries", "Продукти")], suggestion=_cat(99, "osvita", "Освіта")
+    )
+
+    texts = [button.text for row in keyboard.inline_keyboard for button in row]
+    assert not any(text.startswith("➕") for text in texts)
+
+
+def test_the_create_button_stays_inside_telegrams_callback_data_limit() -> None:
+    """`callback_data` is capped at 64 bytes. The label goes in the *text*,
+    never the payload — only two integers do — so even an absurd label cannot
+    overflow it.
+    """
+    suggestion = _cat(2**53, "x" * 60, "Д" * 60, status="suggested")
+
+    keyboard = category_keyboard(2**53, [], suggestion=suggestion)
+
+    payload = keyboard.inline_keyboard[0][0].callback_data
+    assert payload is not None
+    assert len(payload.encode()) <= 64

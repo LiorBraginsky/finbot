@@ -24,6 +24,7 @@ from finbot.repo.engine import json_serializer
 from finbot.repo.models import Message
 from tests.support.fake_llm import FakeLlmClient
 from tests.support.fake_session import FakeSession
+from tests.support.ids import stable_update_id
 from tests.support.updates import ALLOWED_USER_ID, CHAT_ID
 
 
@@ -40,7 +41,7 @@ def _settings(postgres_url: str) -> Settings:
 
 async def _seed_pending_message(session: AsyncSession, raw_text: str) -> int:
     incoming = IncomingMessage(
-        telegram_update_id=abs(hash(raw_text)) % 1_000_000_000,
+        telegram_update_id=stable_update_id(raw_text),
         telegram_message_id=1,
         chat_id=CHAT_ID,
         telegram_user_id=ALLOWED_USER_ID,

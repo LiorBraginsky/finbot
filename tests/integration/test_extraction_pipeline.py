@@ -29,6 +29,7 @@ from finbot.core.models import ExtractionStatus, IncomingMessage, MessageKind, M
 from finbot.repo import categories, messages, users
 from finbot.repo.models import Expense, Extraction, Message
 from tests.support.fake_llm import FakeLlmClient
+from tests.support.ids import stable_update_id
 
 _FIXTURES_DIR = Path(__file__).parents[1] / "fixtures" / "openrouter"
 _TODAY = datetime(2026, 8, 10, tzinfo=UTC).date()
@@ -64,7 +65,7 @@ async def _claimed_message(session: AsyncSession, raw_text: str) -> Message:
     already be incremented for schedule_retry's backoff math to be tested.
     """
     incoming = IncomingMessage(
-        telegram_update_id=hash(raw_text) & 0x7FFFFFFF,
+        telegram_update_id=stable_update_id(raw_text),
         telegram_message_id=1,
         chat_id=-1001111111111,
         telegram_user_id=444444444,
@@ -92,7 +93,7 @@ async def _claimed_voice_message(
     `core.extraction.pipeline`'s too-long guard reads.
     """
     incoming = IncomingMessage(
-        telegram_update_id=hash((file_id, duration_seconds)) & 0x7FFFFFFF,
+        telegram_update_id=stable_update_id(file_id, duration_seconds),
         telegram_message_id=1,
         chat_id=-1001111111111,
         telegram_user_id=444444444,

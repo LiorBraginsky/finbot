@@ -25,6 +25,9 @@ from finbot.core.money import to_amount
 logger = logging.getLogger(__name__)
 
 _ITEM_MAX_LENGTH = 200
+# `categories.label` is String(64); truncate rather than reject, for the same
+# reason `_clean_item` truncates.
+_SUGGESTION_MAX_LENGTH = 64
 
 
 class ExpenseDraft(BaseModel):
@@ -34,6 +37,13 @@ class ExpenseDraft(BaseModel):
     amount: Decimal
     category: str
     occurred_at: date | None = None
+    # A Ukrainian category name the model proposes when it filed this row
+    # under `other` and can name something better (ADR-0021) — «Освіта»,
+    # not a slug: the label is what the household reads, and asking one
+    # call for two strings that must agree invites them to disagree.
+    # `core.categories.slugify` derives the identifier. `None` whenever the
+    # model proposed nothing, which is the normal case.
+    suggested_category: str | None = None
 
     @field_validator("item")
     @classmethod
@@ -65,6 +75,18 @@ class ExpenseDraft(BaseModel):
             return value
         logger.warning("unknown category slug %r; coercing to %r", value, FALLBACK_SLUG)
         return FALLBACK_SLUG
+
+    @field_validator("suggested_category")
+    @classmethod
+    def _clean_suggestion(cls, value: str | None) -> str | None:
+        # `""` and whitespace are what a model returns when it has nothing to
+        # propose but the schema requires the key. Collapsing them to `None`
+        # here means exactly one representation of "no proposal" reaches the
+        # pipeline, instead of three it would each have to test for.
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped[:_SUGGESTION_MAX_LENGTH] or None
 
 
 class ExtractionResult(BaseModel):
@@ -104,8 +126,9 @@ def text_json_schema(slugs: Sequence[str]) -> dict[str, Any]:
             "amount": {"type": "number"},
             "category": {"type": "string", "enum": list(slugs)},
             "occurred_at": {"type": ["string", "null"]},
+            "suggested_category": {"type": ["string", "null"]},
         },
-        "required": ["item", "amount", "category", "occurred_at"],
+        "required": ["item", "amount", "category", "occurred_at", "suggested_category"],
         "additionalProperties": False,
     }
     return {
@@ -176,6 +199,10 @@ class BankRow(BaseModel):
     amount: Decimal
     kind: BankRowKind
     category: str
+    # Mirrors `ExpenseDraft.suggested_category` (ADR-0021); meaningful only
+    # on an `expense` row filed under `other`, and ignored for every other
+    # kind, exactly like `category` itself.
+    suggested_category: str | None = None
     partially_visible: bool
 
     @field_validator("kind", mode="before")
@@ -250,6 +277,7 @@ def bank_json_schema(slugs: Sequence[str]) -> dict[str, Any]:
             "amount": {"type": "number"},
             "kind": {"type": "string", "enum": [k.value for k in _BANK_ROW_WIRE_KINDS]},
             "category": {"type": "string", "enum": list(slugs)},
+            "suggested_category": {"type": ["string", "null"]},
             "partially_visible": {"type": "boolean"},
         },
         "required": [
@@ -259,6 +287,7 @@ def bank_json_schema(slugs: Sequence[str]) -> dict[str, Any]:
             "amount",
             "kind",
             "category",
+            "suggested_category",
             "partially_visible",
         ],
         "additionalProperties": False,
@@ -293,8 +322,9 @@ def voice_json_schema(slugs: Sequence[str]) -> dict[str, Any]:
             "amount": {"type": "number"},
             "category": {"type": "string", "enum": list(slugs)},
             "occurred_at": {"type": ["string", "null"]},
+            "suggested_category": {"type": ["string", "null"]},
         },
-        "required": ["item", "amount", "category", "occurred_at"],
+        "required": ["item", "amount", "category", "occurred_at", "suggested_category"],
         "additionalProperties": False,
     }
     return {

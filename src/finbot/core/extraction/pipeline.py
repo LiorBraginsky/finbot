@@ -49,7 +49,7 @@ from datetime import date
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from finbot.core.categories.catalog import CategorySpec
+from finbot.core.categories.catalog import FALLBACK_SLUG, CategorySpec
 from finbot.core.extraction import bank, text, voice
 from finbot.core.extraction.common import ExtractionInvalidError, build_repair_request
 from finbot.core.extraction.currency import FOREIGN_CURRENCY_ERROR, detect_foreign_currency
@@ -64,6 +64,7 @@ from finbot.core.extraction.ports import (
 from finbot.core.extraction.schema import ExpenseDraft
 from finbot.core.models import ExtractionStatus, MessageKind
 from finbot.prompts import PROMPT_VERSION_BANK, PROMPT_VERSION_TEXT, PROMPT_VERSION_VOICE
+from finbot.repo import categories as categories_repo
 from finbot.repo import expenses as expenses_repo
 from finbot.repo import extractions as extractions_repo
 from finbot.repo import messages as messages_repo
@@ -287,6 +288,51 @@ async def _run_extraction_round[ResultT](
     return ExtractionStatus.INVALID_JSON
 
 
+async def _resolve_category(
+    session: AsyncSession,
+    draft: ExpenseDraft,
+    category_ids: Mapping[str, int],
+) -> tuple[int, int | None]:
+    """`(category_id, suggested_category_id)` for one draft (ADR-0021).
+
+    Three outcomes, and the second is the point of the whole mechanism:
+
+    - **No proposal, or a proposal on a row the model already categorised.**
+      The draft's own category, nothing pending. The `category != other`
+      guard enforces the prompt's own rule in code rather than trusting it:
+      a proposal alongside a confident `groceries` is noise, and honouring it
+      would let the model quietly reclassify a row it had already filed.
+    - **The proposal names a category the owner has already approved.** The
+      expense is filed under it directly, with nothing to tap. This is what
+      makes "on the fly" mean *once*: the second Preply charge lands in
+      «Освіта» by itself.
+    - **The proposal is new, or proposed-but-unapproved.** The expense stays
+      under `other` and carries a pointer to the suggested category, which is
+      what the ✏️ picker turns into `➕ Створити «…»`. Nothing is filed under
+      an unapproved category — ADR-0005's human gate, still intact, just
+      reduced to one tap.
+
+    `KeyError` on `category_ids[...]` would mean a slug with no row, which
+    `catalog`'s own assertions and the seed drift guard already make
+    impossible; it is left unguarded deliberately, so such a state fails
+    loudly here rather than being papered over into `other`.
+    """
+    category_id = category_ids[draft.category]
+    if draft.suggested_category is None or draft.category != FALLBACK_SLUG:
+        return category_id, None
+
+    resolved = await categories_repo.resolve_suggestion(session, draft.suggested_category)
+    if resolved is None:
+        # The proposal slugified onto a seeded category — a rewording of
+        # something the model could have picked outright.
+        return category_id, None
+
+    view, needs_approval = resolved
+    if needs_approval:
+        return category_id, view.id
+    return view.id, None
+
+
 async def _create_expenses(
     session: AsyncSession,
     message: Message,
@@ -300,14 +346,16 @@ async def _create_expenses(
             # concrete date. A raise here (never a bare assert, which
             # `python -O` strips) also narrows the type for mypy below.
             raise AssertionError("resolve_dates must resolve every occurred_at to a date")
+        category_id, suggested_category_id = await _resolve_category(session, draft, category_ids)
         expense_id = await expenses_repo.create(
             session,
             message_id=message.id,
             user_id=message.user_id,
-            category_id=category_ids[draft.category],
+            category_id=category_id,
             item=draft.item,
             amount=draft.amount,
             occurred_at=draft.occurred_at,
+            suggested_category_id=suggested_category_id,
         )
         expense_ids.append(expense_id)
     return tuple(expense_ids)
@@ -542,15 +590,19 @@ async def _extract_bank(
             # _create_expenses's identical guard for text/voice.
             raise AssertionError("bank.plan_writes must resolve every occurred_at to a date")
         occurred_at = write.draft.occurred_at
+        category_id, suggested_category_id = await _resolve_category(
+            session, write.draft, category_ids
+        )
         expense_id = await expenses_repo.create_bank_row(
             session,
             message_id=message.id,
             user_id=message.user_id,
-            category_id=category_ids[write.draft.category],
+            category_id=category_id,
             item=write.draft.item,
             amount=write.draft.amount,
             occurred_at=occurred_at,
             bank_txn_key=write.key,
+            suggested_category_id=suggested_category_id,
         )
         if expense_id is None:
             # Approach C2: the unique index rejected this row, so it was

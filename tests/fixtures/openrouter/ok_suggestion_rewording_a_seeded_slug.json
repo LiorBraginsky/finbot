@@ -1,0 +1,23 @@
+{
+  "id": "gen-fixture-ok-suggestion-rewording-a-seeded-slug",
+  "provider": "OpenAI",
+  "model": "openai/gpt-5.6-luna",
+  "object": "chat.completion",
+  "created": 1754800200,
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"expenses\": [{\"item\": \"щось\", \"amount\": 10, \"category\": \"other\", \"occurred_at\": null, \"suggested_category\": \"Cash\"}]}"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 300,
+    "completion_tokens": 60,
+    "total_tokens": 360,
+    "cost": 0.0004
+  }
+}

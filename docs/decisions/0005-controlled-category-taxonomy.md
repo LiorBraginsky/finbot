@@ -1,6 +1,9 @@
 # ADR-0005 — Controlled category taxonomy with a human gate
 
-**Date:** 2026-08-09 · **Status:** accepted
+**Date:** 2026-08-09 · **Status:** accepted (amended by
+[ADR-0021](0021-categories-are-proposed-by-the-model-created-by-one-tap.md), which keeps
+this record's human gate and its closed model-facing enum, and reduces the gate itself
+from a code change to one inline button)
 
 ## Context
 

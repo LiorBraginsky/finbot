@@ -94,27 +94,40 @@ async def db_session(postgres_url: str) -> AsyncIterator[AsyncSession]:
     )
     session = AsyncSession(engine, expire_on_commit=False)
     try:
-        # `categories` is deliberately absent: it is seeded once by
-        # migrations/versions/0002_stage1_expenses.py, and every expense row
-        # is FK-bound to it — truncating it here would break every FK and
-        # every later test, for a table stage 1 populates and Stage 5 evolves
-        # in place rather than reseeding per test.
+        # The *seeded* rows of `categories` are deliberately never truncated:
+        # they are inserted once by migrations 0002/0005/0006, and every
+        # expense row is FK-bound to them — wiping them here would break
+        # every FK and every later test. Owner-created categories are a
+        # different matter: a `suggested`/`active` row a test caused the model
+        # to propose (ADR-0021) must not leak into the next test, which is
+        # what `DELETE FROM categories WHERE NOT is_system` removes. It runs
+        # *before* `DELETE FROM users`, because `categories.created_by`
+        # references it.
         #
-        # `users` is truncated separately, with DELETE rather than TRUNCATE,
-        # for the same reason: `categories.created_by` is a nullable FK to
-        # `users.id`, and TRUNCATE's FK check is structural — Postgres refuses
-        # to truncate `users` at all unless every table with an FK pointing at
-        # it is truncated too, and CASCADE "solves" that by silently wiping
+        # `users` is deleted, not truncated, and the reason is worth keeping:
+        # `categories.created_by` is a nullable FK to `users.id`, and
+        # TRUNCATE's FK check is structural — Postgres refuses to truncate
+        # `users` at all unless every table with an FK pointing at it is
+        # truncated too, and CASCADE "solves" that by silently wiping
         # `categories` as a side effect (verified: it does, even though
-        # `categories` is never named). DELETE's FK check is value-based
-        # instead, so it succeeds without CASCADE as long as no row actually
-        # references what is being deleted — true here, since Stage 1 never
-        # sets `created_by` (Stage 5 does). The cost is that `users.id` no
-        # longer resets to 1 between tests; nothing in the suite depends on
-        # that, only on counts and on IDs it captured itself.
+        # `categories` is never named). DELETE's FK check is value-based, so
+        # it succeeds as long as no row actually references what is being
+        # deleted.
+        #
+        # That last clause used to read "true here, since Stage 1 never sets
+        # `created_by`". ADR-0021 sets it — approving a proposed category
+        # records who approved it — so the assumption expired and this
+        # fixture started failing with a ForeignKeyViolationError. The
+        # category delete above is what makes the clause true again, this time
+        # by construction rather than by nothing having exercised it yet.
+        #
+        # The cost of DELETE over TRUNCATE is that `users.id` no longer resets
+        # to 1 between tests; nothing in the suite depends on that, only on
+        # counts and on IDs it captured itself.
         await session.execute(
             text("TRUNCATE expenses, corrections, extractions, messages RESTART IDENTITY CASCADE")
         )
+        await session.execute(text("DELETE FROM categories WHERE NOT is_system"))
         await session.execute(text("DELETE FROM users"))
         await session.commit()
         yield session

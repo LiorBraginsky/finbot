@@ -34,6 +34,26 @@ of date.
 
 ---
 
+## 2026-08-26 · stage 5 · claude
+**Did:** ADR-0021 — categories on the fly, without letting the model's own enum grow: a nullable `suggested_category` label on the wire, slugified deterministically in code (`core/categories/slugify.py`, KMU 55:2010 transliteration), resolved against `categories` into a `status='suggested'` row, and turned into one `➕ Створити «Освіта»` row in the ✏️ picker that packs the *same* `SetCategory` callback so approving and filing are atomic. Category presentation became data (`categories.label`, migration 0006) and `render.CATEGORY_LABELS`/`_EMOJI_BY_SLUG` are deleted. Test count 549 -> 610.
+**Hit:** the eval gate earned its keep — the new prompt rule cost voice `transcript_ok` 10/10 -> 8/10, and an A/B against `extract_voice.v1` on the same n proved it was cause, not noise, so voice keeps v1 and proposes nothing.
+**Next:** deploy (migrations 0005 and 0006), then the one thing only the owner can do: send a real bank screenshot, and re-send it.
+**Also:** one full-suite run failed ten integration tests at once and three reruns passed clean; the cause was never reproduced, but the fixtures derived `telegram_update_id` from `hash()`, which Python randomises per process — so the suite's identity space changed every run and an id collision could fail one run in many. All twelve sites now use `tests/support/ids.stable_update_id` (crc32), and `tests/unit/test_stable_update_ids.py` enforces it by AST scan. Four consecutive full runs green after.
+**Open:** a rejected proposal is not remembered — its ➕ button reappears on the next ✏️ tap. Needs a `rejected` status and a "Ні, в «Інше»" button; logged on Stage 5, not done.
+
+### Prompts and models re-measured after the change
+
+| modality | prompt | metrics | mean cost | before |
+|---|---|---|---|---|
+| text | `extract_text.v2` | 22/22 on all five | 0.000381 | 0.000276, also all-perfect |
+| voice | `extract_voice.v1` (unchanged) | 10/10 on all five, `transcript_ok` 10/10 | 0.000505 | 0.000493 |
+| bank | `extract_bank.v3` | `no_false_write` 15/15, `written_count_exact` 15/15, `category_exact` 6/15 | 0.002516 | 0.002256 |
+
+No model changed. All three stay `google/gemini-3.5-flash-lite`.
+
+## Learning notes
+The interesting decision was not the button, it was refusing the obvious design. "Categories on the fly" reads as "build the prompt's category list from the database", and that is wrong in a way that takes a minute to see: it makes the prompt, the strict schema's `enum` and therefore every eval number a function of database state, so no measurement is comparable to any other and the enum grows without bound. Resolving the proposal *in code* — slugify the label, look it up, reuse or create — gets the same behaviour including automatic reuse, with a frozen prompt. The price is that `slugify_category` must be deterministic forever, which is why it has a test file about determinism and totality rather than about pretty output. Second lesson, cheaper but sharper: the "re-run evals before and after a prompt change" gate caught a regression no test could see, and the *A/B against the old prompt* is what turned "probably noise at n=10" into "measured cause". Two runs of the same eval on two prompt versions cost about a cent and settled a question I would otherwise have argued about. Third: `tests/conftest.py` failed with a ForeignKeyViolationError because its comment said the value-based FK check was safe "since Stage 1 never sets `created_by` (Stage 5 does)" — this change sets it. A comment that writes down its own precondition turns a puzzling failure into a one-minute diagnosis.
+
 ## 2026-08-26 · stage 2.5 · claude
 **Did:** ADR-0020 supersedes ADR-0017 — a sixth wire kind `cash_withdrawal` split out of `own_transfer`, and both it and `transfer_out` are now *written*, each under a code-assigned category (`cash`, `transfers`) from `catalog.DERIVED_CATALOG`, seeded by migration 0005 and deliberately absent from the prompt's own enum; prompt bumped to `extract_bank.v2`; the eval's `no_false_expense`/`expense_count_exact` renamed to `no_false_write`/`written_count_exact` because their definitions widened with it. Also fixed the note's written count, which was `len(plan.writes)` and promised rows a re-sent screenshot never produced. Test count 533 -> 549.
 **Hit:** the owner's own screenshots settle the `На картку` ambiguity ADR-0017 could not: Privat writes **"На свою картку *NNNN"** for an own-card transfer and bare **"На картку"** for someone else's, so `extract_bank.v2` states the rule — the production model had classified a bare `На картку` as `own_transfer` and silently dropped 255 UAH.

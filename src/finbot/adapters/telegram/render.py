@@ -8,44 +8,20 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from finbot.core.categories.catalog import ALL_CATEGORIES, SLUGS
 from finbot.core.extraction.bank import SKIPPED_KINDS
 from finbot.core.extraction.pipeline import BankSummary
 from finbot.core.extraction.schema import BankRowKind
 from finbot.core.reporting import Report
+from finbot.repo.expenses import ExpenseView
 
-# Ukrainian labels, presentation only — the stable identifier is the slug
-# (finbot.core.categories.catalog). Asserted below to cover exactly SLUGS —
-# every category in the database, model-choosable or code-assigned — so a
-# further category cannot ship label-less.
-CATEGORY_LABELS: dict[str, str] = {
-    "groceries": "Продукти",
-    "dining_out": "Кафе і доставка",
-    "transport": "Транспорт",
-    "housing": "Житло",
-    "health": "Здоровʼя",
-    "household": "Дім і побут",
-    "clothing": "Одяг",
-    "entertainment": "Дозвілля",
-    "subscriptions": "Підписки",
-    "gifts": "Подарунки і донати",
-    "pets": "Тварини",
-    "hookah": "Кальян",
-    "other": "Інше",
-    "cash": "Готівка",
-    "transfers": "Перекази",
-}
-
-if set(CATEGORY_LABELS) != SLUGS:
-    msg = "CATEGORY_LABELS must cover exactly the catalog's slugs"
-    raise AssertionError(msg)
-
-# ALL_CATEGORIES, not CATALOG: a cash-withdrawal row is filed under a
-# code-assigned slug (ADR-0020) and `render_confirmation` looks its emoji up
-# here, so a map built from the model-choosable subset alone would raise
-# `KeyError` while rendering a real screenshot's confirmation.
-_EMOJI_BY_SLUG: dict[str, str] = {category.slug: category.emoji for category in ALL_CATEGORIES}
-
+# The Ukrainian label and the emoji of a category are **not** constants here
+# any more. They live on the `categories` row and travel with every
+# `ExpenseView`/`ReportLine`/`CategoryView` this module renders, because an
+# owner-created category (ADR-0021) exists only in the database and no
+# import-time map can name it. `categories.label NOT NULL` plus the seed
+# drift guard (`tests/integration/test_categories_seed.py`) is what now
+# guarantees no category ever ships label-less — a stronger guarantee than
+# the assertion this replaced, since it also covers rows the code never saw.
 NO_EXPENSE_REPLY = (
     "Не зрозумів, що саме витрачено. Напиши, будь ласка, що і скільки — "
     "наприклад: «хліб 50, таксі 200»."
@@ -150,8 +126,45 @@ class ConfirmationLine:
     item: str
     amount: Decimal
     category_slug: str
+    category_label: str
+    category_emoji: str
     occurred_at: date
     deleted: bool = False
+    # The category the model proposed and nobody has approved yet, if any —
+    # what the ✏️ picker's `➕ Створити «…»` row is built from (ADR-0021).
+    suggested_category_id: int | None = None
+    suggested_label: str | None = None
+
+
+def to_confirmation_lines(views: Sequence[ExpenseView]) -> list[ConfirmationLine]:
+    """`ExpenseView`s, oldest first, numbered by that fixed order — see
+    `ConfirmationLine`'s docstring on why a number never changes once
+    assigned.
+
+    One builder, used by both the first confirmation (`runner`) and every
+    re-render after a tap (`handlers`). It was two: `runner` built lines from
+    the model's `ExpenseDraft`s, `handlers` from `ExpenseView`s, and they
+    agreed only by inspection. They cannot agree by inspection any more —
+    a line now carries its category's label, emoji and pending proposal,
+    which only the database knows — so there is one path, reading the rows
+    that were actually written.
+    """
+    return [
+        ConfirmationLine(
+            index=index,
+            expense_id=view.id,
+            item=view.item,
+            amount=view.amount,
+            category_slug=view.category_slug,
+            category_label=view.category_label,
+            category_emoji=view.category_emoji,
+            occurred_at=view.occurred_at,
+            deleted=view.deleted,
+            suggested_category_id=view.suggested_category_id,
+            suggested_label=view.suggested_label,
+        )
+        for index, view in enumerate(views, start=1)
+    ]
 
 
 def _amount_text(amount: Decimal) -> str:
@@ -163,7 +176,7 @@ def _date_suffix(occurred_at: date, *, today: date) -> str:
 
 
 def _row_text(line: ConfirmationLine, *, today: date) -> str:
-    emoji = _EMOJI_BY_SLUG[line.category_slug]
+    emoji = line.category_emoji
     if line.deleted:
         # Deleted expenses lose their buttons (handlers.py) and, with them,
         # the number that pointed at those buttons — see ConfirmationLine's
@@ -219,7 +232,7 @@ def render_confirmation(
 
     if len(lines) == 1 and not lines[0].deleted:
         line = lines[0]
-        emoji = _EMOJI_BY_SLUG[line.category_slug]
+        emoji = line.category_emoji
         suffix = _date_suffix(line.occurred_at, today=today)
         body = f"✅ {emoji} {line.item} — {_amount_text(line.amount)} ₴{suffix}"
     else:
@@ -361,8 +374,7 @@ def render_report(report: Report) -> str:
 
     header = f"📊 {report.date_from:%d.%m}–{report.date_to:%d.%m}:"
     rows = [
-        f"{_EMOJI_BY_SLUG[line.category_slug]} {CATEGORY_LABELS[line.category_slug]} — "
-        f"{_amount_text(line.total)} ₴ ({line.count})"
+        f"{line.emoji} {line.label} — {_amount_text(line.total)} ₴ ({line.count})"
         for line in report.lines
     ]
     return "\n".join([header, *rows, f"Разом: {_amount_text(report.total)} ₴"])

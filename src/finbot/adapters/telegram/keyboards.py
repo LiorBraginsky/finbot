@@ -1,12 +1,12 @@
 """Inline keyboards for the confirmation message and the category picker."""
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from finbot.adapters.telegram.callbacks import ExpenseAction, MessageAction, SetCategory
-from finbot.adapters.telegram.render import CATEGORY_LABELS, ConfirmationLine
-from finbot.core.categories.catalog import CategorySpec
+from finbot.adapters.telegram.render import ConfirmationLine
+from finbot.repo.categories import STATUS_ACTIVE, CategoryView
 
 # Beyond this many rows the confirmation is shown without per-row buttons
 # rather than with a keyboard Telegram may reject; only a Stage-4 receipt or
@@ -81,25 +81,48 @@ def confirmation_keyboard(
 
 def category_keyboard(
     expense_id: int,
-    catalog: Sequence[CategorySpec],
-    category_ids: Mapping[str, int],
+    categories: Sequence[CategoryView],
+    *,
+    suggestion: CategoryView | None = None,
 ) -> InlineKeyboardMarkup:
     """The one-tap category picker (Approach D): three buttons per row, plus
     a `← Назад` row that returns to the confirmation.
+
+    `categories` is the **active** set read from the database, not
+    `catalog.CATALOG`: a category created at runtime (ADR-0021) has to appear
+    here on the next tap, and a static list could never show it. Each button's
+    text comes from the row's own `label`/`emoji` for the same reason.
+
+    `suggestion`, when given, adds one full-width row above `← Назад`:
+    `➕ Створити «Освіта»`. It packs the same `SetCategory` callback as every
+    other button — the handler flips a `suggested` category to `active` on the
+    way through, so approving and assigning are one tap and one code path
+    rather than a fourth callback type. Passing an already-active category
+    here is a caller bug the handler tolerates (it becomes an ordinary
+    re-assignment), which is why this is `CategoryView` and not just a label.
     """
     buttons = [
         InlineKeyboardButton(
-            text=f"{category.emoji} {CATEGORY_LABELS[category.slug]}",
-            callback_data=SetCategory(
-                expense_id=expense_id, category_id=category_ids[category.slug]
-            ).pack(),
+            text=f"{category.emoji} {category.label}",
+            callback_data=SetCategory(expense_id=expense_id, category_id=category.id).pack(),
         )
-        for category in catalog
+        for category in categories
     ]
     rows = [
         buttons[start : start + _CATEGORY_COLUMNS]
         for start in range(0, len(buttons), _CATEGORY_COLUMNS)
     ]
+    if suggestion is not None and suggestion.status != STATUS_ACTIVE:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"➕ Створити «{suggestion.label}»",
+                    callback_data=SetCategory(
+                        expense_id=expense_id, category_id=suggestion.id
+                    ).pack(),
+                )
+            ]
+        )
     rows.append(
         [
             InlineKeyboardButton(

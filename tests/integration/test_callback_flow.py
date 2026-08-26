@@ -20,11 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from finbot.adapters.telegram.callbacks import ExpenseAction, SetCategory
 from finbot.adapters.telegram.main import build_dispatcher
+from finbot.adapters.telegram.render import CALLBACK_FAILURE_REPLY
 from finbot.core.models import IncomingMessage, MessageKind
 from finbot.repo import categories, expenses, messages, users
 from finbot.repo.engine import create_sessionmaker
-from finbot.repo.models import Correction, Expense
+from finbot.repo.models import Category, Correction, Expense
 from tests.support.fake_session import FakeSession
+from tests.support.ids import stable_update_id
 from tests.support.updates import ALLOWED_USER_ID, STRANGER_USER_ID, callback_update
 
 _OCCURRED_AT = date(2026, 8, 10)
@@ -47,7 +49,12 @@ def bot() -> Bot:
 
 
 async def _seed_expense(
-    session: AsyncSession, *, item: str, amount: Decimal, category_slug: str
+    session: AsyncSession,
+    *,
+    item: str,
+    amount: Decimal,
+    category_slug: str,
+    suggestion: str | None = None,
 ) -> tuple[int, int, int]:
     """Inserts a user, a `done` message and one expense; returns
     `(message_id, expense_id, user_id)`. `user_id` is `users.id`, the
@@ -56,7 +63,7 @@ async def _seed_expense(
     entirely — this file tests the callback handlers, not the pipeline.
     """
     incoming = IncomingMessage(
-        telegram_update_id=abs(hash((item, amount))) % 1_000_000_000,
+        telegram_update_id=stable_update_id(item, amount),
         telegram_message_id=1,
         chat_id=-1001111111111,
         telegram_user_id=ALLOWED_USER_ID,
@@ -69,6 +76,11 @@ async def _seed_expense(
     message_id = await messages.add_if_new(session, incoming, user_id)
     assert message_id is not None
     category_ids = await categories.by_slug(session)
+    suggested_id: int | None = None
+    if suggestion is not None:
+        resolved = await categories.resolve_suggestion(session, suggestion)
+        assert resolved is not None
+        suggested_id = resolved[0].id
     expense_id = await expenses.create(
         session,
         message_id=message_id,
@@ -77,6 +89,7 @@ async def _seed_expense(
         item=item,
         amount=amount,
         occurred_at=_OCCURRED_AT,
+        suggested_category_id=suggested_id,
     )
     await messages.mark_done(session, message_id)
     await session.commit()
@@ -111,9 +124,15 @@ async def test_delete_callback_soft_deletes_and_records_one_correction(
     assert corrections[0].corrected_by == user_id
 
 
-async def test_edit_callback_shows_the_thirteen_category_buttons(
+async def test_edit_callback_shows_every_active_category_button(
     dispatcher: Dispatcher, bot: Bot, db_session: AsyncSession
 ) -> None:
+    """Fifteen, not the thirteen the model may choose from: the picker
+    reads `categories.active_views` (ADR-0021), so it also offers the two
+    code-assigned ones (ADR-0020) — which is what lets a cash row be moved
+    *back* into «Готівка» after a mis-tap — and would offer an
+    owner-created category too. A static list could show neither.
+    """
     _message_id, expense_id, _user_id = await _seed_expense(
         db_session, item="хліб", amount=Decimal("50.00"), category_slug="groceries"
     )
@@ -132,7 +151,7 @@ async def test_edit_callback_shows_the_thirteen_category_buttons(
         b for b in buttons if b.callback_data and b.callback_data.startswith("cat:")
     ]
     back_buttons = [b for b in buttons if b.callback_data == f"exp:back:{expense_id}"]
-    assert len(category_buttons) == 13
+    assert len(category_buttons) == 15
     assert len(back_buttons) == 1
 
 
@@ -224,6 +243,114 @@ async def test_redelivered_delete_callback_is_idempotent(
     expense = await db_session.get(Expense, expense_id)
     assert expense is not None
     assert expense.deleted_at is not None
+
+    corrections = (
+        (await db_session.execute(select(Correction).where(Correction.expense_id == expense_id)))
+        .scalars()
+        .all()
+    )
+    assert len(corrections) == 1
+
+
+# --- ➕ Створити «…» (ADR-0021) -------------------------------------------
+
+
+async def test_the_picker_offers_a_create_row_for_a_pending_suggestion(
+    dispatcher: Dispatcher, bot: Bot, db_session: AsyncSession
+) -> None:
+    _message_id, expense_id, _user_id = await _seed_expense(
+        db_session,
+        item="курс англійської",
+        amount=Decimal("1200.00"),
+        category_slug="other",
+        suggestion="Освіта",
+    )
+    update = callback_update(3001, ExpenseAction(action="edit", expense_id=expense_id).pack())
+
+    await dispatcher.feed_raw_update(bot, update)
+
+    edits = [
+        r for r in cast(FakeSession, bot.session).requests if isinstance(r, EditMessageReplyMarkup)
+    ]
+    assert len(edits) == 1
+    assert edits[0].reply_markup is not None
+    texts = [b.text for row in edits[0].reply_markup.inline_keyboard for b in row]
+    assert "➕ Створити «Освіта»" in texts
+
+
+async def test_tapping_create_activates_the_category_and_refiles_the_expense(
+    dispatcher: Dispatcher, bot: Bot, db_session: AsyncSession
+) -> None:
+    """One tap, two effects, one transaction: the category becomes real and
+    the row moves into it. A half-done outcome — a created category with the
+    expense still under `other`, or the reverse — is what a separate
+    "approve" callback would have risked.
+    """
+    _message_id, expense_id, user_id = await _seed_expense(
+        db_session,
+        item="курс англійської",
+        amount=Decimal("1200.00"),
+        category_slug="other",
+        suggestion="Освіта",
+    )
+    db_session.expire_all()
+    expense = await db_session.get(Expense, expense_id)
+    assert expense is not None
+    suggested_id = expense.suggested_category_id
+    assert suggested_id is not None
+
+    await dispatcher.feed_raw_update(
+        bot,
+        callback_update(3002, SetCategory(expense_id=expense_id, category_id=suggested_id).pack()),
+    )
+
+    db_session.expire_all()
+    category = await db_session.get(Category, suggested_id)
+    assert category is not None
+    assert category.status == "active"
+    assert category.created_by == user_id
+
+    refiled = await db_session.get(Expense, expense_id)
+    assert refiled is not None
+    assert refiled.category_id == suggested_id
+
+    corrections = (
+        (await db_session.execute(select(Correction).where(Correction.expense_id == expense_id)))
+        .scalars()
+        .all()
+    )
+    assert len(corrections) == 1
+
+
+async def test_a_redelivered_create_tap_is_answered_without_an_error(
+    dispatcher: Dispatcher, bot: Bot, db_session: AsyncSession
+) -> None:
+    """Telegram re-delivers taps. The second one finds the category already
+    active and the expense already filed under it — a no-op that must still
+    answer the callback, or the button spins forever in the client.
+    """
+    _message_id, expense_id, _user_id = await _seed_expense(
+        db_session,
+        item="курс англійської",
+        amount=Decimal("1200.00"),
+        category_slug="other",
+        suggestion="Освіта",
+    )
+    db_session.expire_all()
+    expense = await db_session.get(Expense, expense_id)
+    assert expense is not None
+    suggested_id = expense.suggested_category_id
+    assert suggested_id is not None
+    packed = SetCategory(expense_id=expense_id, category_id=suggested_id).pack()
+
+    await dispatcher.feed_raw_update(bot, callback_update(3003, packed))
+    await dispatcher.feed_raw_update(bot, callback_update(3004, packed))
+
+    answers = [
+        r for r in cast(FakeSession, bot.session).requests if isinstance(r, AnswerCallbackQuery)
+    ]
+    assert len(answers) == 2
+    assert all(a.text != CALLBACK_FAILURE_REPLY for a in answers)
 
     corrections = (
         (await db_session.execute(select(Correction).where(Correction.expense_id == expense_id)))

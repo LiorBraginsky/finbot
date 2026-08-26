@@ -6,7 +6,6 @@ from decimal import Decimal
 import pytest
 
 from finbot.adapters.telegram.render import (
-    CATEGORY_LABELS,
     EMPTY_REPORT_REPLY,
     ConfirmationLine,
     render_confirmation,
@@ -14,14 +13,9 @@ from finbot.adapters.telegram.render import (
     transcript_line,
     voice_too_long_reply,
 )
-from finbot.core.categories.catalog import SLUGS
 from finbot.core.reporting import Report, ReportLine
 
 _TODAY = date(2026, 8, 10)
-
-
-def test_category_labels_cover_exactly_the_catalog_slugs() -> None:
-    assert set(CATEGORY_LABELS) == SLUGS
 
 
 def test_two_expenses_render_as_one_numbered_confirmation_with_a_total() -> None:
@@ -32,6 +26,8 @@ def test_two_expenses_render_as_one_numbered_confirmation_with_a_total() -> None
             item="хліб",
             amount=Decimal("50.00"),
             category_slug="groceries",
+            category_label="Продукти",
+            category_emoji="🛒",
             occurred_at=_TODAY,
         ),
         ConfirmationLine(
@@ -40,6 +36,8 @@ def test_two_expenses_render_as_one_numbered_confirmation_with_a_total() -> None
             item="таксі",
             amount=Decimal("200.00"),
             category_slug="transport",
+            category_label="Транспорт",
+            category_emoji="🚕",
             occurred_at=_TODAY,
         ),
     ]
@@ -59,6 +57,8 @@ def test_a_single_expense_renders_with_no_number_and_no_total() -> None:
             item="хліб",
             amount=Decimal("50.00"),
             category_slug="groceries",
+            category_label="Продукти",
+            category_emoji="🛒",
             occurred_at=_TODAY,
         )
     ]
@@ -74,6 +74,8 @@ def test_an_occurred_at_other_than_today_gets_a_date_suffix() -> None:
             item="таксі",
             amount=Decimal("200.00"),
             category_slug="transport",
+            category_label="Транспорт",
+            category_emoji="🚕",
             occurred_at=date(2026, 8, 9),
         )
     ]
@@ -89,6 +91,8 @@ def test_a_deleted_row_keeps_its_place_but_loses_its_number_and_is_marked() -> N
             item="хліб",
             amount=Decimal("50.00"),
             category_slug="groceries",
+            category_label="Продукти",
+            category_emoji="🛒",
             occurred_at=_TODAY,
         ),
         ConfirmationLine(
@@ -97,6 +101,8 @@ def test_a_deleted_row_keeps_its_place_but_loses_its_number_and_is_marked() -> N
             item="таксі",
             amount=Decimal("200.00"),
             category_slug="transport",
+            category_label="Транспорт",
+            category_emoji="🚕",
             occurred_at=_TODAY,
             deleted=True,
         ),
@@ -140,6 +146,8 @@ def test_render_confirmation_shows_the_transcript_above_a_single_expense() -> No
             item="хліб",
             amount=Decimal("50.00"),
             category_slug="groceries",
+            category_label="Продукти",
+            category_emoji="🛒",
             occurred_at=_TODAY,
         )
     ]
@@ -157,6 +165,8 @@ def test_render_confirmation_shows_the_transcript_above_a_numbered_list() -> Non
             item="хліб",
             amount=Decimal("50.00"),
             category_slug="groceries",
+            category_label="Продукти",
+            category_emoji="🛒",
             occurred_at=_TODAY,
         ),
         ConfirmationLine(
@@ -165,6 +175,8 @@ def test_render_confirmation_shows_the_transcript_above_a_numbered_list() -> Non
             item="таксі",
             amount=Decimal("200.00"),
             category_slug="transport",
+            category_label="Транспорт",
+            category_emoji="🚕",
             occurred_at=_TODAY,
         ),
     ]
@@ -193,8 +205,20 @@ def test_report_with_lines_renders_category_totals_and_a_grand_total() -> None:
         date_from=date(2026, 8, 10),
         date_to=date(2026, 8, 12),
         lines=(
-            ReportLine(category_slug="groceries", total=Decimal("120.00"), count=2),
-            ReportLine(category_slug="transport", total=Decimal("80.00"), count=1),
+            ReportLine(
+                category_slug="groceries",
+                label="Продукти",
+                emoji="🛒",
+                total=Decimal("120.00"),
+                count=2,
+            ),
+            ReportLine(
+                category_slug="transport",
+                label="Транспорт",
+                emoji="🚕",
+                total=Decimal("80.00"),
+                count=1,
+            ),
         ),
         total=Decimal("200.00"),
     )

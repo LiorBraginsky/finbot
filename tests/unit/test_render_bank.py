@@ -3,10 +3,15 @@ Docker, no network — `BankSummary`/`BankPlan` are built by hand here, never
 through the pipeline (that's tests/integration/test_bank_flow.py's job).
 """
 
+from dataclasses import fields
 from datetime import date
 from decimal import Decimal
 
-from finbot.adapters.telegram.render import NOT_A_BANK_FEED_REPLY, render_bank_note
+from finbot.adapters.telegram.render import (
+    NOT_A_BANK_FEED_REPLY,
+    ConfirmationLine,
+    render_bank_note,
+)
 from finbot.core.extraction.bank import BankPlan, BankWrite
 from finbot.core.extraction.pipeline import BankSummary
 from finbot.core.extraction.schema import BankRowKind, ExpenseDraft
@@ -34,6 +39,8 @@ def _collision(item: str, amount: str, *, occurred_at: date = _ANCHOR, id_: int 
         item=item,
         amount=Decimal(amount),
         category_slug="dining_out",
+        category_label="Кафе і доставка",
+        category_emoji="🍽",
         occurred_at=occurred_at,
         deleted=False,
     )
@@ -237,15 +244,21 @@ def test_every_skipped_kind_has_a_label_and_a_place_in_the_order() -> None:
     assert BankRowKind.TRANSFER_OUT not in SKIPPED_KINDS
 
 
-def test_every_category_that_can_reach_a_confirmation_has_an_emoji_and_a_label() -> None:
-    """A cash-withdrawal row is filed under a code-assigned slug, and
-    `render_confirmation` looks its emoji up in `_EMOJI_BY_SLUG` — a map that
-    was built from `CATALOG` alone before ADR-0020 and would have raised
-    `KeyError` on the first real cash row.
+def test_a_confirmation_line_carries_its_own_label_and_emoji() -> None:
+    """This used to assert that `render`'s two constant maps covered every
+    catalog slug. They are gone (ADR-0021): a category created at runtime
+    cannot appear in an import-time map, so presentation travels on the row
+    instead. The property worth pinning now is that nothing in this module
+    looks a category up by slug at all — a lookup is exactly what would
+    reintroduce the `KeyError` the constants risked.
     """
-    from finbot.adapters.telegram import render
-    from finbot.core.categories.catalog import ALL_CATEGORIES
+    import inspect
 
-    for category in ALL_CATEGORIES:
-        assert category.slug in render._EMOJI_BY_SLUG
-        assert category.slug in render.CATEGORY_LABELS
+    from finbot.adapters.telegram import render
+
+    source = inspect.getsource(render)
+
+    assert "CATEGORY_LABELS" not in source
+    assert "_EMOJI_BY_SLUG" not in source
+    # And the field a line actually renders from exists.
+    assert "category_emoji" in {field.name for field in fields(ConfirmationLine)}

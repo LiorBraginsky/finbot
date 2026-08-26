@@ -61,16 +61,23 @@ ignore = ["S104"]
 "src/finbot/core/categories/catalog.py" = ["RUF001"]
 # Every user-facing string the bot ever sends: Ukrainian prose and category
 # labels, same justification as the catalog above.
-"src/finbot/adapters/telegram/render.py" = ["RUF001"]
+"src/finbot/adapters/telegram/render.py" = ["RUF001", "RUF003"]
+# Button labels are Ukrainian, and the ➕ / ✏️ / 🗑 glyphs appear in both the
+# labels and the docstrings explaining them.
+"src/finbot/adapters/telegram/keyboards.py" = ["RUF001", "RUF002"]
 # `query.answer(...)` acknowledgement text for the `🗑 Видалити все` callback
 # (docs/plans/stage-2_5-bank-screenshots.md, Step 3) is Ukrainian prose too —
 # same justification as render.py above.
-"src/finbot/adapters/telegram/handlers.py" = ["RUF001"]
+"src/finbot/adapters/telegram/handlers.py" = ["RUF001", "RUF002", "RUF003"]
 # Asserts the exact Ukrainian/Cyrillic text render.py produces.
 "tests/unit/test_render.py" = ["RUF001"]
 # Asserts the exact Ukrainian text finbot.adapters.telegram.render.
 # render_bank_note produces, same justification as test_render.py above.
 "tests/unit/test_render_bank.py" = ["RUF001"]
+# Asserts the exact Ukrainian button labels keyboards.py produces.
+"tests/unit/test_keyboards.py" = ["RUF001", "RUF002", "RUF003"]
+# Uses a Ukrainian string as the stability fixture for the id function.
+"tests/unit/test_stable_update_ids.py" = ["RUF001"]
 # The currency guard's marker table is Cyrillic words by definition (дол,
 # долар, бакс, євро...), and its comments/docstrings quote them and their
 # Ukrainian near-homographs (долина, європа) to explain what must NOT match
@@ -94,6 +101,19 @@ ignore = ["S104"]
 # "сб"/"пт" in prose), same justification as bank_dates.py above, extended
 # to RUF002 for the same reason as currency.py.
 "tests/unit/test_evals_bank_scoring.py" = ["RUF001", "RUF002"]
+# The transliteration table IS Cyrillic keys — that is the module's entire
+# subject — and the docstring quotes both the letters and the labels they come
+# from. Same justification as bank_dates.py above.
+"src/finbot/core/categories/slugify.py" = ["RUF001", "RUF002", "RUF003"]
+"tests/unit/test_slugify.py" = ["RUF001", "RUF002"]
+# Docstrings and comments naming the ➕ button by its actual glyph, the way
+# render.py and handlers.py already name ✏️ and 🗑.
+"src/finbot/repo/categories.py" = ["RUF002"]
+"src/finbot/repo/expenses.py" = ["RUF002"]
+# `_resolve_category`'s docstring names the ➕ button and quotes the
+# Ukrainian labels it produces.
+"src/finbot/core/extraction/pipeline.py" = ["RUF001", "RUF002"]
+"src/finbot/repo/models.py" = ["RUF003"]
 # BOT_COMMANDS' descriptions are the exact Ukrainian text Telegram shows in
 # the command menu, same justification as the catalog above.
 "src/finbot/adapters/telegram/main.py" = ["RUF001"]
@@ -102,12 +122,20 @@ ignore = ["S104"]
 # Foreign-currency-marker raw_text fixtures ("10доларів"), same
 # justification as the catalog above.
 "tests/integration/test_currency_guard.py" = ["RUF001"]
+# Asserts the exact Ukrainian category labels reports group by.
+"tests/integration/test_reports.py" = ["RUF001"]
+# Asserts the exact Ukrainian category labels migration 0006 seeds.
+"tests/integration/test_categories_seed.py" = ["RUF001"]
 "tests/integration/test_extraction_pipeline.py" = ["RUF001"]
 # Voice Ukrainian/Russian transcript text (docs/roadmap.md Stage 2), same
 # justification as the catalog above.
 "tests/unit/test_extraction_schema.py" = ["RUF001"]
 "tests/unit/test_extraction_voice.py" = ["RUF001"]
 "tests/integration/test_confirmation_flow.py" = ["RUF001"]
+# Ukrainian item text and category labels in seeded rows and assertions.
+"tests/integration/test_callback_flow.py" = ["RUF001", "RUF002", "RUF003"]
+# Ukrainian message text, proposed category labels and the ➕ glyph.
+"tests/integration/test_category_suggestions.py" = ["RUF001", "RUF002"]
 "tests/integration/test_message_repo.py" = ["RUF001"]
 # Bank-feed merchant strings (Ukrainian prose, and the deliberate "differs
 # only by merchant" pin for Approach C2's dedup key), same justification as

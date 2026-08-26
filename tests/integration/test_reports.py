@@ -31,6 +31,7 @@ from finbot.adapters.telegram.render import EMPTY_REPORT_REPLY
 from finbot.core.models import IncomingMessage, MessageKind
 from finbot.repo import categories, expenses, messages, users
 from tests.support.fake_session import FakeSession
+from tests.support.ids import stable_update_id
 from tests.support.updates import ALLOWED_USER_ID, CHAT_ID, text_update
 
 
@@ -67,7 +68,7 @@ async def _seed(
     session: AsyncSession, *, item: str, amount: Decimal, category_slug: str, occurred_at: date
 ) -> int:
     incoming = IncomingMessage(
-        telegram_update_id=abs(hash((item, amount, occurred_at))) % 1_000_000_000,
+        telegram_update_id=stable_update_id(item, amount, occurred_at),
         telegram_message_id=1,
         chat_id=CHAT_ID,
         telegram_user_id=ALLOWED_USER_ID,

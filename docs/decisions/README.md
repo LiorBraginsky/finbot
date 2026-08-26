@@ -28,3 +28,4 @@ An ADR is never edited to change its decision. A new ADR supersedes it and says 
 | [0018](0018-model-reads-the-header-code-owns-the-calendar.md) | The model reads the date header, the code owns the calendar, the weekday is the checksum |
 | [0019](0019-bank-eval-labels-are-as-private-as-its-pixels.md) | A bank-feed eval's labels are as private as its pixels — amends [0009](0009-public-repo-private-eval-data.md), extends [0016](0016-narrow-exception-for-owner-named-voice-samples.md) |
 | [0020](0020-cash-and-transfers-are-recorded-under-an-honest-unknown.md) | Cash withdrawals and outgoing transfers are recorded under an honest "we don't know" — supersedes [0017](0017-only-expense-rows-are-written.md) |
+| [0021](0021-categories-are-proposed-by-the-model-created-by-one-tap.md) | Categories are proposed by the model and created by one tap; the model's enum never grows — amends [0005](0005-controlled-category-taxonomy.md) |

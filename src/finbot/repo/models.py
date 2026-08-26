@@ -94,6 +94,10 @@ class Category(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    # The Ukrainian label shown in every reply. Data, not a constant, since
+    # an owner-created category has no entry in any import-time map
+    # (migration 0006).
+    label: Mapped[str] = mapped_column(String(64), nullable=False)
     emoji: Mapped[str] = mapped_column(String(8), nullable=False)
     is_system: Mapped[bool] = mapped_column(Boolean, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
@@ -158,6 +162,15 @@ class Expense(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id"), nullable=False)
     category_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("categories.id"), nullable=False
+    )
+    # The category the model *proposed* when it filed this row under `other`
+    # and named something better (ADR-0021). Points at a `categories` row
+    # with `status='suggested'` until the owner taps ➕, which flips that row
+    # to 'active'. NULL whenever the model proposed nothing — which is every
+    # row written before this column existed, and every row whose category
+    # the model was confident about.
+    suggested_category_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("categories.id"), nullable=True
     )
     item: Mapped[str] = mapped_column(Text, nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
