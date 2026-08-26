@@ -123,7 +123,13 @@ async def _send_bank_reply(
         raise AssertionError("_send_bank_reply requires outcome.bank_summary")
     anchor = summary.plan.anchor
 
-    await bot.send_message(chat_id=message.chat_id, text=render_bank_note(summary, anchor=anchor))
+    # `written=len(outcome.expense_ids)` — the same tuple the confirmation
+    # below is built from, so the note cannot promise rows the next message
+    # does not carry (see `render_bank_note`'s own docstring).
+    await bot.send_message(
+        chat_id=message.chat_id,
+        text=render_bank_note(summary, anchor=anchor, written=len(outcome.expense_ids)),
+    )
 
     if not outcome.expense_ids:
         return

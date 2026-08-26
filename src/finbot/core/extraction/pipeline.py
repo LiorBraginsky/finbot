@@ -103,16 +103,20 @@ class BankSummary:
     because they depend on what the database actually did with the planned
     writes (docs/plans/stage-2_5-bank-screenshots.md, Approach C2):
 
-    - `duplicates` — planned writes whose keyed insert returned `None`
-      (`repo.expenses.create_bank_row`'s own contract): already recorded,
-      by this user, under this exact `(date, time, amount)` key.
+    - `duplicates` — the drafts of planned writes whose keyed insert returned
+      `None` (`repo.expenses.create_bank_row`'s own contract): already
+      recorded, by this user, under this exact `(date, time, amount)` key.
+      The **drafts**, not a count: a reply that only says "2 already
+      recorded" leaves a wrongly-suppressed row invisible, which is the one
+      failure mode of a dedup key too coarse for a given feed. Naming them
+      turns that from silent into checkable — `len()` is the count.
     - `manual_collisions` — non-deleted, non-bank expenses matching one of
       the rows this round actually wrote, named for the reply but never
       merged or suppressed (R7): both rows keep existing.
     """
 
     plan: bank.BankPlan
-    duplicates: int = 0
+    duplicates: tuple[ExpenseDraft, ...] = field(default_factory=tuple)
     manual_collisions: tuple[expenses_repo.ExpenseView, ...] = field(default_factory=tuple)
 
 
@@ -530,7 +534,7 @@ async def _extract_bank(
     expense_ids: list[int] = []
     drafts: list[ExpenseDraft] = []
     written_pairs: list[tuple[date, ExpenseDraft]] = []
-    duplicates = 0
+    duplicates: list[ExpenseDraft] = []
     for write in plan.writes:
         if write.draft.occurred_at is None:
             # bank.plan_writes's own contract: every write it returns has
@@ -550,9 +554,10 @@ async def _extract_bank(
         )
         if expense_id is None:
             # Approach C2: the unique index rejected this row, so it was
-            # already recorded — this is the counter R8 needs, not a SELECT
-            # this code ran itself.
-            duplicates += 1
+            # already recorded — this is what R8 needs, not a SELECT this
+            # code ran itself. The draft is kept, not just counted, so the
+            # reply can name what it suppressed.
+            duplicates.append(write.draft)
             continue
         expense_ids.append(expense_id)
         drafts.append(write.draft)
@@ -571,7 +576,7 @@ async def _extract_bank(
         expense_ids=tuple(expense_ids),
         drafts=tuple(drafts),
         bank_summary=BankSummary(
-            plan=plan, duplicates=duplicates, manual_collisions=tuple(manual_collisions)
+            plan=plan, duplicates=tuple(duplicates), manual_collisions=tuple(manual_collisions)
         ),
     )
 

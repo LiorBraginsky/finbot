@@ -201,7 +201,10 @@ async def test_same_screenshot_twice_writes_nothing_the_second_time(
 
     assert outcome_2.expense_ids == ()
     assert outcome_2.bank_summary is not None
-    assert outcome_2.bank_summary.duplicates == 1
+    # The draft itself, not just a count: `render_bank_note` names every
+    # suppressed row so a wrongly-suppressed one is visible rather than
+    # silently absent, and it can only do that if the pipeline carries it.
+    assert [draft.item for draft in outcome_2.bank_summary.duplicates] == ["Silpo"]
 
     expense_rows = (await db_session.execute(select(Expense))).scalars().all()
     assert len(expense_rows) == 1
@@ -227,7 +230,7 @@ async def test_overlapping_screenshot_writes_only_the_new_rows(db_session: Async
 
     assert len(outcome_2.expense_ids) == 1
     assert outcome_2.bank_summary is not None
-    assert outcome_2.bank_summary.duplicates == 1
+    assert len(outcome_2.bank_summary.duplicates) == 1
 
     expense_rows = (await db_session.execute(select(Expense).order_by(Expense.id))).scalars().all()
     assert [row.item for row in expense_rows] == ["Silpo", "Rozetka"]
@@ -252,7 +255,7 @@ async def test_two_rows_sharing_a_key_in_one_body_insert_once_and_are_counted(
 
     assert len(outcome.expense_ids) == 1
     assert outcome.bank_summary is not None
-    assert outcome.bank_summary.duplicates == 1
+    assert len(outcome.bank_summary.duplicates) == 1
 
     expense_rows = (await db_session.execute(select(Expense))).scalars().all()
     assert len(expense_rows) == 1
@@ -288,7 +291,7 @@ async def test_manual_expense_same_date_and_amount_is_left_alone_and_reported(
 
     assert len(outcome.expense_ids) == 1
     assert outcome.bank_summary is not None
-    assert outcome.bank_summary.duplicates == 0
+    assert len(outcome.bank_summary.duplicates) == 0
     collisions = outcome.bank_summary.manual_collisions
     assert len(collisions) == 1
     assert collisions[0].id == manual_expense_id
@@ -368,7 +371,7 @@ async def test_soft_deleted_bank_row_is_not_resurrected_by_a_resend(
 
     assert outcome_2.expense_ids == ()
     assert outcome_2.bank_summary is not None
-    assert outcome_2.bank_summary.duplicates == 1
+    assert len(outcome_2.bank_summary.duplicates) == 1
 
     expense_rows = (await db_session.execute(select(Expense))).scalars().all()
     assert len(expense_rows) == 1

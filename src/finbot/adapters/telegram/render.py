@@ -247,8 +247,13 @@ _SKIP_ORDER: tuple[BankRowKind, ...] = (
 # `transcript_line`).
 _MAX_COLLISION_WARNINGS = 5
 
+# Same reasoning as _MAX_COLLISION_WARNINGS, applied to the duplicate list:
+# re-sending a month-long feed can suppress dozens of rows, and naming every
+# one of them would push a single note past Telegram's 4096-character limit.
+_MAX_DUPLICATE_LINES = 5
 
-def render_bank_note(summary: BankSummary, *, anchor: date) -> str:
+
+def render_bank_note(summary: BankSummary, *, anchor: date, written: int) -> str:
     """The note a bank screenshot always gets first (Approach D2), sent as
     its own message and never edited again — unlike the confirmation that
     may follow, which `handlers._rerender_group` rebuilds from scratch on
@@ -262,9 +267,18 @@ def render_bank_note(summary: BankSummary, *, anchor: date) -> str:
     report at all — see that constant's own docstring for why that reading
     covers both a genuinely empty feed and `is_transaction_feed: false`
     without needing to tell them apart.
+
+    **`written` is a parameter, never `len(summary.plan.writes)`.** It was
+    the latter once, and that was a live bug: `plan.writes` is what the
+    classifier *planned*, while the confirmation message listing the rows is
+    built from `ExtractionOutcome.expense_ids` — what the keyed insert
+    *actually* wrote. On a re-sent screenshot every planned write is
+    rejected as a duplicate, so the note promised "Записав: 2 (нижче)" and
+    `runner._send_bank_reply` then returned without sending anything below
+    it. The promise and the payload have to come from the same number, and
+    the only number that is a fact is the one the caller passes here.
     """
     plan = summary.plan
-    written = len(plan.writes)
     skip_parts = [
         f"{_SKIP_LABELS[kind]} {plan.skipped_by_kind[kind]}"
         for kind in _SKIP_ORDER
@@ -291,7 +305,17 @@ def render_bank_note(summary: BankSummary, *, anchor: date) -> str:
     if plan.cut_off:
         lines.append(f"Обрізано на краю: {plan.cut_off} — не вгадував.")
     if summary.duplicates:
-        lines.append(f"Вже було: {summary.duplicates}.")
+        lines.append(f"Вже було: {len(summary.duplicates)}.")
+        shown_duplicates = summary.duplicates[:_MAX_DUPLICATE_LINES]
+        lines.extend(
+            f"  · {draft.item} — {_amount_text(draft.amount)} ₴ за {draft.occurred_at:%d.%m}"
+            if draft.occurred_at is not None
+            else f"  · {draft.item} — {_amount_text(draft.amount)} ₴"
+            for draft in shown_duplicates
+        )
+        remaining_duplicates = len(summary.duplicates) - len(shown_duplicates)
+        if remaining_duplicates > 0:
+            lines.append(f"  · …і ще {remaining_duplicates}.")
     if plan.unresolved_date:
         lines.append(f"Не зрозумів дату: {plan.unresolved_date}.")
     if plan.bad_amount:
