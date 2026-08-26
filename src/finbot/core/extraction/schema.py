@@ -19,7 +19,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from finbot.core.categories.catalog import FALLBACK_SLUG, SLUGS
+from finbot.core.categories.catalog import FALLBACK_SLUG, MODEL_SLUGS, SLUGS
 from finbot.core.money import to_amount
 
 logger = logging.getLogger(__name__)
@@ -56,9 +56,14 @@ class ExpenseDraft(BaseModel):
         # The schema's `enum` already makes this near-impossible; when it
         # happens anyway (a repaired/edited response, a future looser
         # schema), filing it under `other` is worth more than a repair call.
+        #
+        # `SLUGS`, not `MODEL_SLUGS`: a draft is not always the model's own
+        # choice. `bank.plan_writes` builds one with a code-assigned
+        # `DERIVED_CATALOG` slug for a cash-withdrawal or transfer-out row
+        # (ADR-0020), and this validator must not undo that.
         if value in SLUGS:
             return value
-        logger.warning("unknown category slug %r from model; coercing to %r", value, FALLBACK_SLUG)
+        logger.warning("unknown category slug %r; coercing to %r", value, FALLBACK_SLUG)
         return FALLBACK_SLUG
 
 
@@ -114,9 +119,18 @@ def text_json_schema(slugs: Sequence[str]) -> dict[str, Any]:
 
 
 class BankRowKind(StrEnum):
-    """The five wire kinds a bank-feed row can be classified as, plus a sixth,
-    `UNCLASSIFIED`, that the wire schema's `enum` cannot itself produce (see
-    `bank_json_schema` below — its `kind` enum lists only the first five).
+    """The six wire kinds a bank-feed row can be classified as, plus a
+    seventh, `UNCLASSIFIED`, that the wire schema's `enum` cannot itself
+    produce (see `bank_json_schema` below — its `kind` enum lists only the
+    six wire values).
+
+    `CASH_WITHDRAWAL` is split out of `OWN_TRANSFER` by ADR-0020, because the
+    two have opposite fates: a card-to-own-card transfer is skipped (the
+    other card's own feed will show what was spent, so recording the transfer
+    too would double-count), while cash leaves the banking system entirely
+    and no later feed will ever account for it. `Зняття готівки в банкоматі`
+    is a fixed Privat/Mono label, not free text, which is what makes this a
+    kind the model can be asked to tell apart reliably.
 
     `UNCLASSIFIED` exists for the same reason `ExpenseDraft.
     _fallback_unknown_category` coerces an unknown slug to `other`: strict
@@ -130,6 +144,7 @@ class BankRowKind(StrEnum):
     INCOME = "income"
     SAVINGS = "savings"
     OWN_TRANSFER = "own_transfer"
+    CASH_WITHDRAWAL = "cash_withdrawal"
     TRANSFER_OUT = "transfer_out"
     UNCLASSIFIED = "unclassified"
 
@@ -139,6 +154,7 @@ _BANK_ROW_WIRE_KINDS: tuple[BankRowKind, ...] = (
     BankRowKind.INCOME,
     BankRowKind.SAVINGS,
     BankRowKind.OWN_TRANSFER,
+    BankRowKind.CASH_WITHDRAWAL,
     BankRowKind.TRANSFER_OUT,
 )
 _BANK_ROW_WIRE_KIND_VALUES: frozenset[str] = frozenset(k.value for k in _BANK_ROW_WIRE_KINDS)
@@ -190,7 +206,12 @@ class BankRow(BaseModel):
     @field_validator("category")
     @classmethod
     def _fallback_unknown_category(cls, value: str) -> str:
-        if value in SLUGS:
+        # `MODEL_SLUGS`, deliberately narrower than `ExpenseDraft`'s `SLUGS`:
+        # this field is the model's own answer, and `cash`/`transfers` are
+        # never its to choose (ADR-0020). A model that emitted one anyway —
+        # against the schema enum — must land on `other`, not smuggle a
+        # code-assigned category in through the wire.
+        if value in MODEL_SLUGS:
             return value
         logger.warning("unknown category slug %r from model; coercing to %r", value, FALLBACK_SLUG)
         return FALLBACK_SLUG
@@ -216,7 +237,7 @@ def bank_json_schema(slugs: Sequence[str]) -> dict[str, Any]:
     independent literal rather than sharing a helper with `text_json_schema`/
     `voice_json_schema`.
 
-    `kind.enum` is the five wire values only — `UNCLASSIFIED` is a domain
+    `kind.enum` is the six wire values only — `UNCLASSIFIED` is a domain
     concept `BankRow`'s validator introduces, never something the model is
     asked or allowed to emit.
     """

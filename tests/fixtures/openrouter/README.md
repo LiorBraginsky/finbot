@@ -111,3 +111,12 @@ like any other fixture. The three bank fixtures above are the one exception:
 synthetic bank-feed screenshot), so `--save-raw` must refuse a `--modality
 bank` run mechanically rather than silently writing a real screenshot's
 response body here (Stage 2.5's own verification, Step 4).
+
+- `bank_cash_and_transfer.json` — one `cash_withdrawal` row and one
+  `transfer_out` row, plus an `own_transfer` row on the same feed. The
+  ADR-0020 case: the first two are *written*, each under the category the
+  code assigns from its kind (`cash`/`transfers`) rather than the
+  `category` this fixture deliberately fills with something else
+  (`other`, `gifts`) — so a regression that trusted the model's own
+  category would fail visibly. The third stays written nowhere, which is
+  what keeps "written" and "skipped" distinguishable in one body.

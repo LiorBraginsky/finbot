@@ -133,9 +133,13 @@ it has.*
 ## 🚧 Stage 2.5 — Bank-app screenshots
 
 - A screenshot of a bank-app transaction feed → vision model → rows classified into
-  `expense` / `income` / `savings` / `own_transfer` / `transfer_out`
-- **Only `expense` rows are written to `expenses`** — the other four are shown, never
-  stored (vision.md excludes income, savings and transfers; ADR-0006 gains no fourth table)
+  `expense` / `income` / `savings` / `own_transfer` / `cash_withdrawal` / `transfer_out`
+- **Three kinds are written to `expenses`, three are shown and stored nowhere**
+  ([ADR-0020](decisions/0020-cash-and-transfers-are-recorded-under-an-honest-unknown.md),
+  superseding ADR-0017's "only `expense`"): a purchase under the model's own category,
+  and a cash withdrawal / outgoing transfer under a category the *code* assigns
+  (`cash`, `transfers`) — because no later feed row will ever account for that money.
+  `income`, `savings` and a transfer to the household's own other card stay unstored
 - The model transcribes each row's date header verbatim; code resolves it against the
   message's own arrival time and cross-checks the header's own weekday as a checksum —
   the model is never told today's date

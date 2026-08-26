@@ -591,6 +591,15 @@ def render_voice_table(results: list[VoiceModelResult]) -> str:
 # guards `_parse_bank_row` against.
 _BANK_ROW_WIRE_KINDS = frozenset(k.value for k in BankRowKind if k is not BankRowKind.UNCLASSIFIED)
 
+# The kinds that reach `expenses` (ADR-0020), derived from `bank`'s own
+# whitelist rather than restated here — a fourth written kind added to the
+# production classifier must widen this set automatically, or the eval would
+# score the new behaviour as a regression and the measurement would be
+# describing code that no longer exists.
+_BANK_WRITTEN_KINDS = frozenset({BankRowKind.EXPENSE.value}) | frozenset(
+    kind.value for kind in bank.FORCED_CATEGORY
+)
+
 
 @dataclass(frozen=True)
 class BankRowExpectation:
@@ -636,13 +645,13 @@ class BankCaseScore:
     dropped_exact: bool
     category_exact: bool
     date_exact: bool
-    expense_count_exact: bool
+    written_count_exact: bool
     amount_exact: bool
     # The gate this stage exists for (docs/plans/stage-2_5-bank-
     # screenshots.md, "The metric this step exists for"): deliberately
     # asymmetric, and scoreable even when count_exact does not hold — see
     # score_bank_case's own docstring.
-    no_false_expense: bool
+    no_false_write: bool
     cost_usd: Decimal | None
     latency_ms: int | None
 
@@ -658,9 +667,9 @@ class BankModelResult:
     dropped_exact: int
     category_exact: int
     date_exact: int
-    expense_count_exact: int
+    written_count_exact: int
     amount_exact: int
-    no_false_expense: int
+    no_false_write: int
     costs: tuple[Decimal, ...]
     latencies_ms: tuple[int, ...]
 
@@ -704,24 +713,39 @@ def _parse_bank_row(row: dict[str, Any], *, case_id: str, path: Path) -> BankRow
         )
         raise TypeError(msg)
 
-    # `category`/`occurred_offset_days` are the format's own convention
-    # (evals/golden/bank/README.md): present exactly on an `expense` row,
-    # omitted on every other kind. Enforced here, not merely documented, for
-    # the same reason the kind check above is — a hand-typed case file is
-    # exactly where this drifts unnoticed.
+    # The format's own convention (evals/golden/bank/README.md), split along
+    # ADR-0020's two axes rather than one:
+    #   - `occurred_offset_days` on every **written** kind, because all three
+    #     land in `expenses` and all three have a date `date_exact` scores;
+    #   - `category` on `expense` alone, because a written non-expense row's
+    #     category comes from `bank.FORCED_CATEGORY` — labelling it would
+    #     score the code against itself, not the model.
+    # Enforced here, not merely documented, for the same reason the kind check
+    # above is: a hand-typed case file is exactly where this drifts unnoticed,
+    # and a silently-absent offset would make `date_exact` vacuously true.
     has_category = "category" in row
     has_offset = "occurred_offset_days" in row
     is_expense = kind == BankRowKind.EXPENSE.value
-    if is_expense and not (has_category and has_offset):
+    is_written = kind in _BANK_WRITTEN_KINDS
+    if is_written and not has_offset:
         msg = (
-            f"{path}: golden case {case_id!r} expense row must set both "
-            "'category' and 'occurred_offset_days'"
+            f"{path}: golden case {case_id!r} written row (kind={kind!r}) must set "
+            "'occurred_offset_days'"
         )
         raise TypeError(msg)
-    if not is_expense and (has_category or has_offset):
+    if not is_written and has_offset:
+        msg = (
+            f"{path}: golden case {case_id!r} skipped row (kind={kind!r}) must omit "
+            "'occurred_offset_days' — it is never written, so it has no date to score"
+        )
+        raise TypeError(msg)
+    if is_expense and not has_category:
+        msg = f"{path}: golden case {case_id!r} expense row must set 'category'"
+        raise TypeError(msg)
+    if not is_expense and has_category:
         msg = (
             f"{path}: golden case {case_id!r} non-expense row (kind={kind!r}) must omit "
-            "'category' and 'occurred_offset_days'"
+            "'category' — the code assigns it from the kind (ADR-0020)"
         )
         raise TypeError(msg)
 
@@ -819,11 +843,18 @@ def score_bank_case(
 ) -> BankCaseScore:
     """Score one already-parsed bank-extraction response against its case.
 
-    `no_false_expense` — the metric this stage exists for — is **set-based
+    `no_false_write` — the metric this stage exists for — is **set-based
     and deliberately asymmetric**, computed independently of every
     positional metric below it: every amount `bank.plan_writes` would
     actually *write* must appear, with multiplicity, among this case's own
-    `expense`-kind, fully-visible row amounts. `Counter.__le__` is exactly
+    fully-visible rows of a **written** kind (`_BANK_WRITTEN_KINDS`).
+
+    It was `no_false_expense`, over `expense`-kind rows alone, until ADR-0020
+    made `cash_withdrawal` and `transfer_out` written kinds too. The rename is
+    deliberate rather than a silent widening: `docs/journal.md` records real
+    `no_false_expense` numbers from before that decision, and a metric whose
+    definition changed under the same name would make those numbers look
+    comparable to these when they are not. `Counter.__le__` is exactly
     multiset inclusion, so `written <= allowed` is true when nothing was
     written that should not have been (the model may still *miss* an
     expense — `written` is then a strict subset — which is the named
@@ -834,27 +865,26 @@ def score_bank_case(
 
     Every other metric is positional, gated on `count_exact` — mirroring
     `score_case`'s own docstring — except `feed_ok` (a single top-level
-    field) and `expense_count_exact` (a total, not a pairing, so a miscount
+    field) and `written_count_exact` (a total, not a pairing, so a miscount
     still gets a total-count signal `count_exact` cannot give it).
-    `category_exact`/`date_exact`/`dropped_exact` are further scoped to
-    rows this case actually labelled `expense`: category and date are
-    meaningless for the other four kinds, and `dropped_exact` — "was a
-    cut-off row correctly left unwritten" — has nothing to say about a row
-    that was never going to be written anyway.
+    `date_exact`/`dropped_exact` are further scoped to rows of a written
+    kind: a date the code never resolves and a row that was never going to be
+    written carry no signal. `category_exact` is scoped more narrowly still —
+    to `expense` rows alone — because a written non-expense row's category is
+    assigned by the code from its kind (ADR-0020), so scoring it would be
+    scoring `FORCED_CATEGORY` against itself rather than measuring the model.
     """
     feed_ok = result.is_transaction_feed == case.is_transaction_feed
 
     plan = bank.plan_writes(result, anchor=case.anchor_date)
-    expected_expense_rows = [
-        row
-        for row in case.rows
-        if row.kind == BankRowKind.EXPENSE.value and not row.partially_visible
+    expected_written_rows = [
+        row for row in case.rows if row.kind in _BANK_WRITTEN_KINDS and not row.partially_visible
     ]
-    expense_count_exact = len(plan.writes) == len(expected_expense_rows)
+    written_count_exact = len(plan.writes) == len(expected_written_rows)
 
-    allowed_amounts = Counter(row.amount for row in expected_expense_rows)
+    allowed_amounts = Counter(row.amount for row in expected_written_rows)
     written_amounts = Counter(write.draft.amount for write in plan.writes)
-    no_false_expense = written_amounts <= allowed_amounts
+    no_false_write = written_amounts <= allowed_amounts
 
     count_exact = len(result.rows) == len(case.rows)
     if count_exact:
@@ -871,13 +901,13 @@ def score_bank_case(
             or bank_dates.resolve(actual.date_header, anchor=case.anchor_date)
             == case.anchor_date + timedelta(days=expected.occurred_offset_days)
             for actual, expected in pairs
-            if expected.kind == BankRowKind.EXPENSE.value
+            if expected.kind in _BANK_WRITTEN_KINDS
         )
         dropped_exact = all(
             _bank_row_would_write(actual, anchor=case.anchor_date)
             == (not expected.partially_visible)
             for actual, expected in pairs
-            if expected.kind == BankRowKind.EXPENSE.value
+            if expected.kind in _BANK_WRITTEN_KINDS
         )
     else:
         amount_exact = kind_exact = category_exact = date_exact = dropped_exact = False
@@ -891,9 +921,9 @@ def score_bank_case(
         dropped_exact=dropped_exact,
         category_exact=category_exact,
         date_exact=date_exact,
-        expense_count_exact=expense_count_exact,
+        written_count_exact=written_count_exact,
         amount_exact=amount_exact,
-        no_false_expense=no_false_expense,
+        no_false_write=no_false_write,
         cost_usd=cost_usd,
         latency_ms=latency_ms,
     )
@@ -903,7 +933,7 @@ def failed_bank_case_score(
     case_id: str, *, cost_usd: Decimal | None, latency_ms: int | None
 ) -> BankCaseScore:
     """Mirrors `failed_case_score`: the response never became a usable
-    `BankExtractionResult`, so every metric — `no_false_expense` included —
+    `BankExtractionResult`, so every metric — `no_false_write` included —
     is a miss. Nothing was ever classified, so there is nothing to trust.
     """
     return BankCaseScore(
@@ -915,9 +945,9 @@ def failed_bank_case_score(
         dropped_exact=False,
         category_exact=False,
         date_exact=False,
-        expense_count_exact=False,
+        written_count_exact=False,
         amount_exact=False,
-        no_false_expense=False,
+        no_false_write=False,
         cost_usd=cost_usd,
         latency_ms=latency_ms,
     )
@@ -934,9 +964,9 @@ def aggregate_bank(model: str, scores: list[BankCaseScore]) -> BankModelResult:
         dropped_exact=sum(score.dropped_exact for score in scores),
         category_exact=sum(score.category_exact for score in scores),
         date_exact=sum(score.date_exact for score in scores),
-        expense_count_exact=sum(score.expense_count_exact for score in scores),
+        written_count_exact=sum(score.written_count_exact for score in scores),
         amount_exact=sum(score.amount_exact for score in scores),
-        no_false_expense=sum(score.no_false_expense for score in scores),
+        no_false_write=sum(score.no_false_write for score in scores),
         costs=tuple(score.cost_usd for score in scores if score.cost_usd is not None),
         latencies_ms=tuple(score.latency_ms for score in scores if score.latency_ms is not None),
     )
@@ -944,14 +974,14 @@ def aggregate_bank(model: str, scores: list[BankCaseScore]) -> BankModelResult:
 
 def render_bank_table(results: list[BankModelResult]) -> str:
     """Mirrors `render_table`/`render_voice_table`: raw counts, never
-    percentages. `no_false_expense` sits first among the accuracy columns,
+    percentages. `no_false_write` sits first among the accuracy columns,
     not last — Gate 1 (docs/plans/stage-2_5-bank-screenshots.md, Owner
     prerequisite 3) is read off this column before any other, and a model
     failing it is disqualified regardless of everything to its right.
     """
     header = (
-        "| model | schema_ok | no_false_expense | feed_ok | count_exact | kind_exact "
-        "| dropped_exact | expense_count_exact | amount_exact | category_exact "
+        "| model | schema_ok | no_false_write | feed_ok | count_exact | kind_exact "
+        "| dropped_exact | written_count_exact | amount_exact | category_exact "
         "| date_exact | mean cost (USD) | p50 latency (ms) | p95 latency (ms) |"
     )
     separator = "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"
@@ -961,12 +991,12 @@ def render_bank_table(results: list[BankModelResult]) -> str:
         rows.append(
             f"| {result.model} "
             f"| {result.schema_ok}/{result.total} "
-            f"| {result.no_false_expense}/{result.total} "
+            f"| {result.no_false_write}/{result.total} "
             f"| {result.feed_ok}/{result.total} "
             f"| {result.count_exact}/{result.total} "
             f"| {result.kind_exact}/{result.total} "
             f"| {result.dropped_exact}/{result.total} "
-            f"| {result.expense_count_exact}/{result.total} "
+            f"| {result.written_count_exact}/{result.total} "
             f"| {result.amount_exact}/{result.total} "
             f"| {result.category_exact}/{result.total} "
             f"| {result.date_exact}/{result.total} "

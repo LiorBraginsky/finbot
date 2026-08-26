@@ -25,7 +25,7 @@ from decimal import Decimal
 
 from pydantic import ValidationError
 
-from finbot.core.categories.catalog import CategorySpec
+from finbot.core.categories.catalog import DERIVED_CATALOG, CategorySpec
 from finbot.core.extraction import bank_dates
 from finbot.core.extraction.common import ExtractionInvalidError, strip_fence
 from finbot.core.extraction.ports import LlmRequest
@@ -40,31 +40,65 @@ from finbot.prompts import render_bank_prompt
 
 SCHEMA_NAME = "bank_extraction_result"
 
-# The four wire kinds that are neither `expense` nor the domain-only
-# `unclassified` — a row of any of these is reported and stored nowhere
-# (Approach A1), counted in `BankPlan.skipped_by_kind` by its own kind.
-_SKIPPED_KINDS: frozenset[BankRowKind] = frozenset(
+# The wire kinds that are reported and stored nowhere (ADR-0017 as amended by
+# ADR-0020), counted in `BankPlan.skipped_by_kind` by their own kind. Public
+# (no leading underscore) because `adapters.telegram.render` derives its
+# Ukrainian label map from this set and asserts the two cover each other — a
+# kind skipped with no label would raise `KeyError` mid-reply, on a real
+# screenshot, in production.
+#
+# Each one's reason for being here is different, and worth stating because
+# `cash_withdrawal` and `transfer_out` deliberately are *not*:
+#   - `income` — not a withdrawal of money at all.
+#   - `savings` — moved into the household's own jar. Where it went is known.
+#   - `own_transfer` — moved to the household's own other card. That card's
+#     own feed will show whatever is eventually spent from it, so recording
+#     the transfer as well would count the same money twice.
+SKIPPED_KINDS: frozenset[BankRowKind] = frozenset(
     {
         BankRowKind.INCOME,
         BankRowKind.SAVINGS,
         BankRowKind.OWN_TRANSFER,
-        BankRowKind.TRANSFER_OUT,
     }
 )
 
-# `plan_writes` writes a row only when `row.kind is BankRowKind.EXPENSE` — a
-# whitelist, not the blacklist `_SKIPPED_KINDS` alone would be (ADR-0017).
-# This pins that every `BankRowKind` is accounted for on one side or the
-# other: a sixth wire kind added later without updating `_SKIPPED_KINDS`
-# fails here, at import time, instead of silently falling through to the
-# write path and being recorded as spending. `raise AssertionError` rather
-# than a bare `assert` (ruff S101 forbids the latter outside `tests/`), and
-# for the better reason that this must still fire under `python -O`.
-if set(_SKIPPED_KINDS) | {BankRowKind.EXPENSE, BankRowKind.UNCLASSIFIED} != set(BankRowKind):
+# The non-`expense` kinds that are written, each under a category the **code**
+# assigns from the kind alone — never the model's own `category`, which for
+# these rows is meaningless (ADR-0020). Both mean the same thing: the money
+# left the account and the feed does not say where it went. Recording it under
+# an honest "we don't know" beats not recording it, because a missing row
+# understates the total silently, while a miscategorised row is visible and
+# one ✏️ tap from correct.
+FORCED_CATEGORY: Mapping[BankRowKind, str] = {
+    BankRowKind.CASH_WITHDRAWAL: "cash",
+    BankRowKind.TRANSFER_OUT: "transfers",
+}
+
+# `plan_writes` writes a row only when its kind is in here — a whitelist, not
+# the blacklist `SKIPPED_KINDS` alone would be (ADR-0017).
+_WRITTEN_KINDS: frozenset[BankRowKind] = frozenset({BankRowKind.EXPENSE}) | frozenset(
+    FORCED_CATEGORY
+)
+
+# This pins that every `BankRowKind` is accounted for on exactly one side: a
+# seventh wire kind added later without updating either set fails here, at
+# import time, instead of silently falling through to the write path and being
+# recorded as spending — or silently vanishing from the reply. `raise
+# AssertionError` rather than a bare `assert` (ruff S101 forbids the latter
+# outside `tests/`), and for the better reason that this must still fire under
+# `python -O`.
+if SKIPPED_KINDS | _WRITTEN_KINDS | {BankRowKind.UNCLASSIFIED} != set(BankRowKind):
     raise AssertionError(
-        "BankRowKind gained a member that is neither BankRowKind.EXPENSE, "
-        "BankRowKind.UNCLASSIFIED, nor listed in _SKIPPED_KINDS"
+        "BankRowKind gained a member that is neither BankRowKind.UNCLASSIFIED "
+        "nor listed in SKIPPED_KINDS or _WRITTEN_KINDS"
     )
+if SKIPPED_KINDS & _WRITTEN_KINDS:
+    raise AssertionError("a BankRowKind cannot be both skipped and written")
+# `FORCED_CATEGORY`'s values have to exist as real `categories` rows, or the
+# pipeline's `category_ids[draft.category]` lookup raises `KeyError` on a
+# screenshot that happens to contain one — a crash, not a counted row.
+if not set(FORCED_CATEGORY.values()) <= {c.slug for c in DERIVED_CATALOG}:
+    raise AssertionError("every FORCED_CATEGORY slug must be in catalog.DERIVED_CATALOG")
 
 
 def build_request(
@@ -171,13 +205,13 @@ class BankPlan:
     so a row can be attributed to exactly one reason (R8: the user always
     learns what was skipped and why).
 
-    `skipped_by_kind` counts the four non-expense, non-unclassified kinds
-    (`income`, `savings`, `own_transfer`, `transfer_out`) individually, which
-    is what lets a reply distinguish "2 savings, 1 transfer" rather than
+    `skipped_by_kind` counts the three skipped kinds (`income`, `savings`,
+    `own_transfer` — see `SKIPPED_KINDS` for why each) individually, which is
+    what lets a reply distinguish "2 savings, 1 transfer to self" rather than
     reporting one lump "skipped" number. `unclassified` is separate: it is a
-    domain-only outcome the wire schema cannot itself produce (`BankRowKind`'s
-    own docstring), not one of the four kinds the model can legitimately
-    choose.
+    domain-only outcome the wire schema cannot itself produce
+    (`BankRowKind`'s own docstring), not one of the kinds the model can
+    legitimately choose.
     """
 
     anchor: date
@@ -196,11 +230,17 @@ def plan_writes(result: BankExtractionResult, *, anchor: date) -> BankPlan:
     then a resolved date — so each row is attributed to exactly the first
     reason that excludes it, never more than one counter per row.
 
-    The kind check is a **whitelist** (ADR-0017): `row.kind is not
-    BankRowKind.EXPENSE` is what excludes a row, not membership in
-    `_SKIPPED_KINDS`. A sixth wire kind added later and forgotten in
-    `_SKIPPED_KINDS` is therefore caught by the module-level exhaustiveness
-    assertion above, not silently written to `expenses` as spending.
+    The kind check is a **whitelist** (ADR-0017): absence from
+    `_WRITTEN_KINDS` is what excludes a row, not membership in
+    `SKIPPED_KINDS`. A seventh wire kind added later and forgotten in both
+    sets is therefore caught by the module-level exhaustiveness assertion
+    above, not silently written to `expenses` as spending.
+
+    Three kinds are written, not one (ADR-0020): a true `expense` under the
+    model's own `category`, and `cash_withdrawal`/`transfer_out` under the
+    `FORCED_CATEGORY` slug the code assigns from the kind. A row cannot be
+    partially believed — if it is written at all, its amount and date come
+    from the same reading as an expense's do.
 
     Nothing here is allowed to raise (R8's other half): a bad row is a
     counted row, never an exception. `to_amount` and `ExpenseDraft`'s own
@@ -228,7 +268,7 @@ def plan_writes(result: BankExtractionResult, *, anchor: date) -> BankPlan:
     unclassified = 0
 
     for row in result.rows:
-        if row.kind is not BankRowKind.EXPENSE:
+        if row.kind not in _WRITTEN_KINDS:
             if row.kind is BankRowKind.UNCLASSIFIED:
                 unclassified += 1
             else:
@@ -248,7 +288,14 @@ def plan_writes(result: BankExtractionResult, *, anchor: date) -> BankPlan:
         try:
             amount = to_amount(row.amount)
             draft = ExpenseDraft(
-                item=row.merchant, amount=amount, category=row.category, occurred_at=occurred_at
+                item=row.merchant,
+                amount=amount,
+                # The model's `category` only for a true `expense`; for the
+                # other written kinds the code decides from the kind alone
+                # (ADR-0020) — a cash withdrawal has no merchant to
+                # categorise, and whatever the model guessed for it is noise.
+                category=FORCED_CATEGORY.get(row.kind, row.category),
+                occurred_at=occurred_at,
             )
         except (ValueError, ArithmeticError):
             # to_amount enforces the upper bound (core.money.MAX_AMOUNT) the

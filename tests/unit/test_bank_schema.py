@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from finbot.core.categories.catalog import CATALOG
+from finbot.core.categories.catalog import CATALOG, DERIVED_CATALOG
 from finbot.core.extraction.schema import (
     BankExtractionResult,
     BankRow,
@@ -77,11 +77,32 @@ def test_bank_category_enum_is_every_catalog_slug_in_catalog_order() -> None:
     assert category_node["enum"][-1] == "other"
 
 
-def test_bank_kind_enum_is_exactly_the_five_wire_values() -> None:
+def test_bank_kind_enum_is_exactly_the_six_wire_values() -> None:
     schema = bank_json_schema(_SLUGS_IN_ORDER)
     kind_node = schema["properties"]["rows"]["items"]["properties"]["kind"]
-    assert kind_node["enum"] == ["expense", "income", "savings", "own_transfer", "transfer_out"]
+    assert kind_node["enum"] == [
+        "expense",
+        "income",
+        "savings",
+        "own_transfer",
+        "cash_withdrawal",
+        "transfer_out",
+    ]
     assert "unclassified" not in kind_node["enum"]
+
+
+def test_the_category_enum_never_offers_a_code_assigned_slug() -> None:
+    """ADR-0020: `cash` and `transfers` are assigned by `bank.plan_writes`
+    from a row's kind, never chosen by the model. Offering them in the enum
+    would let it file a supermarket purchase as cash — the one thing the
+    split between `CATALOG` and `DERIVED_CATALOG` exists to prevent.
+    """
+    schema = bank_json_schema([c.slug for c in CATALOG])
+    category_node = schema["properties"]["rows"]["items"]["properties"]["category"]
+
+    assert category_node["enum"] == [c.slug for c in CATALOG]
+    for derived in DERIVED_CATALOG:
+        assert derived.slug not in category_node["enum"]
 
 
 def test_a_valid_instance_parses_into_bank_extraction_result() -> None:

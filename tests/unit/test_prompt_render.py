@@ -88,7 +88,7 @@ def test_render_voice_prompt_mentions_transcribing_before_extracting() -> None:
 
 
 def test_prompt_version_bank_matches_the_shipped_file() -> None:
-    assert PROMPT_VERSION_BANK == "extract_bank.v1"
+    assert PROMPT_VERSION_BANK == "extract_bank.v2"
     assert "Categories" in load(PROMPT_VERSION_BANK)
 
 

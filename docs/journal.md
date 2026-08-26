@@ -34,6 +34,27 @@ of date.
 
 ---
 
+## 2026-08-26 · stage 2.5 · claude
+**Did:** ADR-0020 supersedes ADR-0017 — a sixth wire kind `cash_withdrawal` split out of `own_transfer`, and both it and `transfer_out` are now *written*, each under a code-assigned category (`cash`, `transfers`) from `catalog.DERIVED_CATALOG`, seeded by migration 0005 and deliberately absent from the prompt's own enum; prompt bumped to `extract_bank.v2`; the eval's `no_false_expense`/`expense_count_exact` renamed to `no_false_write`/`written_count_exact` because their definitions widened with it. Also fixed the note's written count, which was `len(plan.writes)` and promised rows a re-sent screenshot never produced. Test count 533 -> 549.
+**Hit:** the owner's own screenshots settle the `На картку` ambiguity ADR-0017 could not: Privat writes **"На свою картку *NNNN"** for an own-card transfer and bare **"На картку"** for someone else's, so `extract_bank.v2` states the rule — the production model had classified a bare `На картку` as `own_transfer` and silently dropped 255 UAH.
+**Next:** part C, on-the-fly categories: `category_exact` is 5/15 on the private bank set, and every miss is a merchant with no honest slug among the thirteen.
+**Open:** no case in the private set contains an ATM withdrawal, so `cash_withdrawal` recall is **unmeasured** — the kind is exercised only by `tests/fixtures/openrouter/bank_cash_and_transfer.json`, which proves the plumbing, not the model.
+
+### Re-measurement after the prompt and schema change
+
+Pre-registered gates unchanged (`no_false_write` perfect, then `amount_exact`); `--repeats 2`, then 5 on the chosen model alone.
+
+| model | schema_ok | no_false_write | count_exact | written_count_exact | amount_exact | category_exact | mean cost | p50 | p95 |
+|---|---|---|---|---|---|---|---|---|---|
+| google/gemini-3.5-flash-lite (n=6) | 6/6 | **6/6** | 5/6 | 6/6 | 5/6 | 4/6 | 0.002280 | 2354 | 3441 |
+| google/gemini-3.6-flash (n=6) | 6/6 | **6/6** | 4/6 | 6/6 | 4/6 | 2/6 | 0.011520 | 11602 | 24256 |
+| google/gemini-3.5-flash-lite (n=15) | 15/15 | **15/15** | 12/15 | 15/15 | 12/15 | 5/15 | 0.002256 | 2218 | 2599 |
+
+`MODEL_VISION` stays `google/gemini-3.5-flash-lite`: it holds the gate at n=15 and reads amounts better than the 5x-dearer control, as in the first measurement.
+
+## Learning notes
+`count_exact` reads 12/15 (80%) at n=15 where the pre-change run showed 6/6 — which looks like a regression and is not evidence of one: an 80% true rate produces 6/6 about a quarter of the time, so the earlier number was a small sample, not a better model. The pair of metrics is what makes this readable at all. `count_exact` counts *every* row the model reported; `written_count_exact` counts only the rows that become money, and it is 15/15. So the miscounting is real and it lands exclusively on rows that are written nowhere — savings and income. That is the difference between a defect worth stopping for and a diagnostic worth logging, and no single accuracy number could have told them apart. It also explains the production symptom from 2026-08-25: message 46 dropped a row on a re-read, and the row it dropped was a cut-off one, not an expense.
+
 ## 2026-08-24 · stage 2.5 · worker
 **Did:** Fixed the stage-2.5 review's three blockers — `plan_writes` can no longer raise (blank/whitespace merchant, an extreme amount now land in `bad_amount` instead of escaping), the kind write-decision is a whitelist with an import-time exhaustiveness pin, `bank_txn_key` normalises `time` before dedup — plus six smaller holes (`schema.py` unhashable `kind`, `bank_dates.py` `isdecimal`, `manual_duplicate_candidates` scoped to `user_id`, eval row validation, a `_rerender_group` PHOTO-branch test) and four doc updates (ADR-0018 §6, the bank README's `no_false_expense` limit, two known bugs recorded on Stage 4/6). Test count 514 -> 530.
 **Hit:** the whitelist rewrite makes `_SKIPPED_KINDS` unused by `plan_writes` itself (only the import-time assertion still reads it) — stronger than a blacklist-with-a-pin, since a monkeypatched/shrunk `_SKIPPED_KINDS` now has zero effect on what gets written, not just a caught one.

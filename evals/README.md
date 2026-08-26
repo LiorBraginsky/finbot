@@ -168,9 +168,9 @@ set's run-date-relative `occurred_offset_days` — a screenshot's date headers a
 into its pixels, so `--today` has no effect on this modality. See `evals/golden/bank/
 README.md` for the full case format.
 
-The printed table leads with `no_false_expense` — deliberately asymmetric, and the metric
+The printed table leads with `no_false_write` — deliberately asymmetric, and the metric
 `MODEL_VISION`'s choice actually turns on (see that README's own Metrics section) — then
 `schema_ok`, `feed_ok`, `count_exact`, `kind_exact`, `dropped_exact`,
-`expense_count_exact`, `amount_exact`, `category_exact`, `date_exact`, then cost/latency.
+`written_count_exact`, `amount_exact`, `category_exact`, `date_exact`, then cost/latency.
 A fresh clone cannot run this modality at all until a private case set exists — the
 correct, honest failure (Stage 2.5's Owner prerequisite 1), not a reason to commit one.

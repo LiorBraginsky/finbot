@@ -58,7 +58,6 @@ def test_every_skip_reason_at_once_matches_the_planned_wording_exactly() -> None
         skipped_by_kind={
             BankRowKind.SAVINGS: 2,
             BankRowKind.OWN_TRANSFER: 1,
-            BankRowKind.TRANSFER_OUT: 1,
             BankRowKind.INCOME: 1,
         },
         cut_off=1,
@@ -75,7 +74,7 @@ def test_every_skip_reason_at_once_matches_the_planned_wording_exactly() -> None
     assert note == (
         "🧾 Скріншот за 24.08 — дати рахував від цього дня.\n"
         "Записав: 4 (нижче).\n"
-        "Пропустив: скарбничка 2, переказ собі 1, переказ 1, надходження 1.\n"
+        "Пропустив: скарбничка 2, переказ собі 1, надходження 1.\n"
         "Обрізано на краю: 1 — не вгадував.\n"
         "Вже було: 1.\n"
         "  · Multiplex — 320.00 ₴ за 24.08\n"
@@ -144,7 +143,6 @@ def test_note_stays_well_under_telegrams_message_limit_for_a_worst_case_feed() -
         skipped_by_kind={
             BankRowKind.SAVINGS: 5,
             BankRowKind.OWN_TRANSFER: 5,
-            BankRowKind.TRANSFER_OUT: 5,
             BankRowKind.INCOME: 5,
         },
         cut_off=20,
@@ -220,3 +218,34 @@ def test_a_duplicate_without_a_resolved_date_still_gets_a_line() -> None:
     note = render_bank_note(summary, anchor=_ANCHOR, written=0)
 
     assert "  · Silpo — 100.00 ₴" in note
+
+
+def test_every_skipped_kind_has_a_label_and_a_place_in_the_order() -> None:
+    """`_SKIP_LABELS[kind]` is an unguarded subscript inside
+    `render_bank_note`. A kind that becomes skipped without gaining a label
+    would raise `KeyError` while replying to a real screenshot — after the
+    money was already written, so the user sees a crash instead of a
+    confirmation. `render.py` asserts this at import time; this states it as
+    a test so the invariant is visible in the suite.
+    """
+    from finbot.adapters.telegram import render
+    from finbot.core.extraction.bank import SKIPPED_KINDS
+
+    assert set(render._SKIP_LABELS) == set(SKIPPED_KINDS)
+    assert set(render._SKIP_ORDER) == set(SKIPPED_KINDS)
+    assert BankRowKind.CASH_WITHDRAWAL not in SKIPPED_KINDS
+    assert BankRowKind.TRANSFER_OUT not in SKIPPED_KINDS
+
+
+def test_every_category_that_can_reach_a_confirmation_has_an_emoji_and_a_label() -> None:
+    """A cash-withdrawal row is filed under a code-assigned slug, and
+    `render_confirmation` looks its emoji up in `_EMOJI_BY_SLUG` — a map that
+    was built from `CATALOG` alone before ADR-0020 and would have raised
+    `KeyError` on the first real cash row.
+    """
+    from finbot.adapters.telegram import render
+    from finbot.core.categories.catalog import ALL_CATEGORIES
+
+    for category in ALL_CATEGORIES:
+        assert category.slug in render._EMOJI_BY_SLUG
+        assert category.slug in render.CATEGORY_LABELS

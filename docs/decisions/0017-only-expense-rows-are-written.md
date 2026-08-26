@@ -1,6 +1,11 @@
 # ADR-0017 — Only `expense` rows are written; the other four kinds are shown, not stored
 
-**Date:** 2026-08-24 · **Status:** accepted
+**Date:** 2026-08-24 · **Status:** superseded by
+[ADR-0020](0020-cash-and-transfers-are-recorded-under-an-honest-unknown.md), which finds
+that two of the four skipped kinds — an outgoing transfer and a cash withdrawal — are
+money no later feed row will ever account for, and writes them under a code-assigned
+category instead. The other two (`income`, `savings`) are still written nowhere, and this
+record's reasoning for them stands.
 **Related:** [ADR-0006](0006-separate-provenance-tables.md) (`extractions` already holds what the
 model made of an input, verbatim, per attempt),
 [ADR-0013](0013-messages-table-is-the-inbox.md) §2 (a second table holding the same rows creates

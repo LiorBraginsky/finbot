@@ -3,7 +3,7 @@ function in the stage" (docs/plans/stage-2_5-bank-screenshots.md, R3/R4):
 it decides what becomes real money in `expenses`.
 
 The case table is derived from the decision space, not from the plan's own
-illustrative examples: the five wire kinds plus the coerced sixth
+illustrative examples: the six wire kinds plus the coerced seventh
 (`unclassified`), times the four independent exclusion reasons
 (`partially_visible`, `amount <= 0`, an unresolvable date,
 `is_transaction_feed: false`) — including the cases that prove *priority*:
@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from finbot.core.categories.catalog import DERIVED_CATALOG
 from finbot.core.extraction import bank
 from finbot.core.extraction.bank import BankPlan, bank_txn_key, plan_writes
 from finbot.core.extraction.schema import BankExtractionResult, BankRowKind
@@ -78,11 +79,13 @@ def test_anchor_is_carried_through_onto_the_plan() -> None:
 # --- Each non-expense kind produces no draft, under its own counter,   ----
 # --- taking priority over every other exclusion reason stacked onto it ----
 
+# The kinds that are written nowhere. `cash_withdrawal` and `transfer_out`
+# are deliberately absent — ADR-0020 writes both, under a code-assigned
+# category; their own tests are further down.
 _NON_EXPENSE_KIND_ROWS: tuple[tuple[str, BankRowKind], ...] = (
     ("income", BankRowKind.INCOME),
     ("savings", BankRowKind.SAVINGS),
     ("own_transfer", BankRowKind.OWN_TRANSFER),
-    ("transfer_out", BankRowKind.TRANSFER_OUT),
     # Not a schema-valid wire value: BankRow's own validator coerces it.
     ("something-the-model-invented", BankRowKind.UNCLASSIFIED),
 )
@@ -122,15 +125,15 @@ def test_the_write_decision_does_not_depend_on_skipped_kinds_membership(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Blocking 3 of the stage-2_5 review: `plan_writes` decides "write" from
-    `row.kind is BankRowKind.EXPENSE` alone, never from membership in
-    `_SKIPPED_KINDS` — a whitelist, not the blacklist this replaces.
-    Shrinking `_SKIPPED_KINDS` to empty and confirming a savings row is
+    membership in `_WRITTEN_KINDS` alone, never from absence from
+    `SKIPPED_KINDS` — a whitelist, not the blacklist this replaces.
+    Shrinking `SKIPPED_KINDS` to empty and confirming a savings row is
     still excluded pins that: under the blacklist this fix replaced, the
     same shrink would silently fall through to the write path and record a
-    savings jar as spending — exactly ADR-0017's failure mode, from a sixth
-    wire kind added later and forgotten in `_SKIPPED_KINDS`.
+    savings jar as spending — exactly ADR-0017's failure mode, from a
+    further wire kind added later and forgotten in `SKIPPED_KINDS`.
     """
-    monkeypatch.setattr(bank, "_SKIPPED_KINDS", frozenset())
+    monkeypatch.setattr(bank, "SKIPPED_KINDS", frozenset())
     plan = _plan(_row(kind="savings"))
     assert plan.writes == ()
     assert plan.skipped_by_kind == {BankRowKind.SAVINGS: 1}
@@ -263,3 +266,77 @@ def test_writes_preserve_the_models_row_order_even_when_rows_are_skipped() -> No
         _row(merchant="Second"),
     )
     assert [write.draft.item for write in plan.writes] == ["First", "Second"]
+
+
+# --- The two written non-expense kinds (ADR-0020) -------------------------
+
+
+def test_cash_withdrawal_is_written_under_the_code_assigned_cash_category() -> None:
+    """The money left the account and the feed does not say where it went, so
+    it is recorded rather than skipped — under `cash`, not under whatever
+    `category` the model guessed for a row that has no merchant to
+    categorise.
+    """
+    plan = _plan(
+        _row(kind="cash_withdrawal", merchant="Зняття готівки в банкоматі", category="groceries")
+    )
+
+    assert len(plan.writes) == 1
+    assert plan.writes[0].draft.category == "cash"
+    assert plan.writes[0].draft.item == "Зняття готівки в банкоматі"
+    assert plan.skipped_by_kind == {}
+
+
+def test_transfer_out_is_written_under_the_code_assigned_transfers_category() -> None:
+    plan = _plan(_row(kind="transfer_out", merchant="Переказ на картку 1234", category="gifts"))
+
+    assert len(plan.writes) == 1
+    assert plan.writes[0].draft.category == "transfers"
+    assert plan.skipped_by_kind == {}
+
+
+def test_a_true_expense_still_keeps_the_models_own_category() -> None:
+    """The mirror of the two above: forcing a category must apply *only* to
+    the kinds in `FORCED_CATEGORY`. A bug that forced it for every row would
+    file every purchase as cash and pass both tests above.
+    """
+    plan = _plan(_row(kind="expense", category="groceries"))
+
+    assert plan.writes[0].draft.category == "groceries"
+
+
+def test_every_forced_category_slug_is_a_real_seeded_category() -> None:
+    """`pipeline` does `category_ids[draft.category]` — an unguarded
+    subscript. A `FORCED_CATEGORY` slug missing from the catalog would raise
+    `KeyError` mid-screenshot, after the model was already billed. The module
+    asserts this at import time; this pins that the assertion is about the
+    right set.
+    """
+    assert set(bank.FORCED_CATEGORY.values()) <= {c.slug for c in DERIVED_CATALOG}
+    assert set(bank.FORCED_CATEGORY) == {
+        BankRowKind.CASH_WITHDRAWAL,
+        BankRowKind.TRANSFER_OUT,
+    }
+
+
+def test_no_kind_is_both_skipped_and_written() -> None:
+    """The exhaustiveness pair the module asserts at import time, restated as
+    a test so a reviewer reading the suite sees the invariant without having
+    to trust an import-time side effect.
+    """
+    written = {BankRowKind.EXPENSE} | set(bank.FORCED_CATEGORY)
+
+    assert not (bank.SKIPPED_KINDS & written)
+    assert bank.SKIPPED_KINDS | written | {BankRowKind.UNCLASSIFIED} == set(BankRowKind)
+
+
+def test_a_written_non_expense_row_is_still_subject_to_every_field_check() -> None:
+    """ "Written" is not "believed unconditionally": a cut-off cash row, or one
+    whose date cannot be resolved, is excluded exactly like an expense would
+    be. Otherwise the two new kinds would become a hole in the very guards
+    ADR-0018 and R4 exist to enforce.
+    """
+    assert _plan(_row(kind="cash_withdrawal", partially_visible=True)).cut_off == 1
+    assert _plan(_row(kind="cash_withdrawal", amount=Decimal("0"))).bad_amount == 1
+    assert _plan(_row(kind="transfer_out", date_header="геть незрозуміло")).unresolved_date == 1
+    assert _plan(_row(kind="transfer_out"), is_transaction_feed=False).writes == ()

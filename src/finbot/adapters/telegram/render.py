@@ -8,14 +8,16 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from finbot.core.categories.catalog import CATALOG, SLUGS
+from finbot.core.categories.catalog import ALL_CATEGORIES, SLUGS
+from finbot.core.extraction.bank import SKIPPED_KINDS
 from finbot.core.extraction.pipeline import BankSummary
 from finbot.core.extraction.schema import BankRowKind
 from finbot.core.reporting import Report
 
 # Ukrainian labels, presentation only — the stable identifier is the slug
-# (finbot.core.categories.catalog.CATALOG). Asserted below to cover exactly
-# SLUGS, so a fourteenth category cannot ship label-less.
+# (finbot.core.categories.catalog). Asserted below to cover exactly SLUGS —
+# every category in the database, model-choosable or code-assigned — so a
+# further category cannot ship label-less.
 CATEGORY_LABELS: dict[str, str] = {
     "groceries": "Продукти",
     "dining_out": "Кафе і доставка",
@@ -30,13 +32,19 @@ CATEGORY_LABELS: dict[str, str] = {
     "pets": "Тварини",
     "hookah": "Кальян",
     "other": "Інше",
+    "cash": "Готівка",
+    "transfers": "Перекази",
 }
 
 if set(CATEGORY_LABELS) != SLUGS:
     msg = "CATEGORY_LABELS must cover exactly the catalog's slugs"
     raise AssertionError(msg)
 
-_EMOJI_BY_SLUG: dict[str, str] = {category.slug: category.emoji for category in CATALOG}
+# ALL_CATEGORIES, not CATALOG: a cash-withdrawal row is filed under a
+# code-assigned slug (ADR-0020) and `render_confirmation` looks its emoji up
+# here, so a map built from the model-choosable subset alone would raise
+# `KeyError` while rendering a real screenshot's confirmation.
+_EMOJI_BY_SLUG: dict[str, str] = {category.slug: category.emoji for category in ALL_CATEGORIES}
 
 NO_EXPENSE_REPLY = (
     "Не зрозумів, що саме витрачено. Напиши, будь ласка, що і скільки — "
@@ -112,7 +120,9 @@ HELP_TEXT = (
     "Я записую витрати з тексту — просто напиши, що і скільки, "
     "наприклад: «хліб 50, таксі 200».\n\n"
     "Скріншот виписки банку теж підійде — я запишу витрати з нього і покажу, "
-    "що саме пропустив (заощадження, перекази, надходження).\n\n"
+    "що саме пропустив (скарбничка, переказ на свою картку, надходження).\n\n"
+    "Знята готівка і переказ комусь ідуть у «Готівка» і «Перекази» — стрічка не "
+    "каже, куди ці гроші пішли, тому ✏️ перекладе їх у потрібну категорію.\n\n"
     "Команди:\n"
     "/day — витрати за сьогодні\n"
     "/week — за тиждень\n"
@@ -223,22 +233,31 @@ def render_confirmation(
 
 # Presentation order and Ukrainian labels for `BankPlan.skipped_by_kind`
 # (Approach D2's note) — deliberately not `BankRowKind`'s own declaration
-# order (expense, income, savings, own_transfer, transfer_out): "money
-# that's still ours" (savings, own_transfer) reads before "money that left
-# to someone else" (transfer_out), which reads before "money that arrived"
-# (income) — the order the plan's own worked example uses.
+# order: "money that's still ours" (savings, own_transfer) reads before
+# "money that arrived" (income). `transfer_out` and `cash_withdrawal` are
+# absent because they are no longer skipped — ADR-0020 writes them.
 _SKIP_LABELS: dict[BankRowKind, str] = {
     BankRowKind.SAVINGS: "скарбничка",
     BankRowKind.OWN_TRANSFER: "переказ собі",
-    BankRowKind.TRANSFER_OUT: "переказ",
     BankRowKind.INCOME: "надходження",
 }
 _SKIP_ORDER: tuple[BankRowKind, ...] = (
     BankRowKind.SAVINGS,
     BankRowKind.OWN_TRANSFER,
-    BankRowKind.TRANSFER_OUT,
     BankRowKind.INCOME,
 )
+
+# `_SKIP_LABELS[kind]` is an unguarded subscript inside `render_bank_note`, so
+# a kind that becomes skipped without gaining a label here raises `KeyError`
+# mid-reply — on a real screenshot, in production, after the money was already
+# written. Both directions are checked: a label for a kind that is no longer
+# skipped is dead presentation that would never print.
+if set(_SKIP_LABELS) != set(SKIPPED_KINDS):
+    msg = "_SKIP_LABELS must cover exactly bank.SKIPPED_KINDS"
+    raise AssertionError(msg)
+if set(_SKIP_ORDER) != set(_SKIP_LABELS):
+    msg = "_SKIP_ORDER must cover exactly _SKIP_LABELS"
+    raise AssertionError(msg)
 
 # The plan's own rule (## Chosen approach): warnings capped at five, with a
 # trailing "and N more" line past that — a worst-case 20-row feed would

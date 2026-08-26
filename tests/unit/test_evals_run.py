@@ -512,7 +512,7 @@ async def test_run_bank_case_scores_a_recorded_feed_and_skips_non_expense_rows()
     """`bank_feed_ok.json` (tests/fixtures/openrouter/) carries one expense
     row (Silpo, 320.50) and two non-expense rows (a savings jar, an own-card
     transfer) — the case's own ground truth agrees, so every metric,
-    including `no_false_expense`, reads clean.
+    including `no_false_write`, reads clean.
     """
     case = _bank_case(
         rows=(
@@ -536,8 +536,8 @@ async def test_run_bank_case_scores_a_recorded_feed_and_skips_non_expense_rows()
     assert score.schema_ok
     assert score.feed_ok
     assert score.count_exact
-    assert score.no_false_expense
-    assert score.expense_count_exact
+    assert score.no_false_write
+    assert score.written_count_exact
     assert score.amount_exact
     assert score.category_exact
     assert score.cost_usd == Decimal("0.0019")
@@ -571,7 +571,7 @@ async def test_run_bank_case_treats_invalid_json_content_as_a_failed_case() -> N
     score = await run_bank_case(client, "openai/gpt-5.6-luna", case)
 
     assert not score.schema_ok
-    assert not score.no_false_expense
+    assert not score.no_false_write
     assert score.cost_usd == Decimal("0.0000891")
 
 
@@ -609,12 +609,12 @@ async def test_run_bank_model_aggregates_across_repeats() -> None:
 
     assert result.total == 2
     assert result.schema_ok == 2
-    assert result.no_false_expense == 2
+    assert result.no_false_write == 2
     assert result.costs == (Decimal("0.0019"), Decimal("0.0019"))
 
     table = render_bank_table([result])
     assert "m" in table
-    assert "no_false_expense" in table
+    assert "no_false_write" in table
     assert "2/2" in table
     assert "%" not in table
 
@@ -651,7 +651,7 @@ async def test_run_bank_case_multi_day_fixture_writes_across_two_dates() -> None
     assert score.count_exact
     assert score.date_exact
     assert score.amount_exact
-    assert score.no_false_expense
+    assert score.no_false_write
 
 
 # --- --modality bank refuses --save-raw before opening a socket -----------

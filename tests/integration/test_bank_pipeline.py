@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from finbot.core.categories.catalog import CATALOG
 from finbot.core.extraction.pipeline import extract_and_store
+from finbot.core.extraction.schema import BankRowKind
 from finbot.core.models import ExtractionStatus, IncomingMessage, MessageKind, MessageStatus
 from finbot.repo import categories, messages, users
 from finbot.repo.models import Expense, Extraction, Message
@@ -229,3 +230,85 @@ async def test_not_a_transaction_feed_writes_nothing_but_still_marks_done(
     refreshed = await db_session.get(Message, message_id)
     assert refreshed is not None
     assert refreshed.status == MessageStatus.DONE
+
+
+async def test_cash_and_transfer_out_rows_land_in_their_code_assigned_categories(
+    db_session: AsyncSession,
+) -> None:
+    """ADR-0020, end to end through a real Postgres: the two written
+    non-expense kinds reach `expenses` under `cash`/`transfers` — the FK,
+    not just the slug — while `own_transfer` on the same screenshot is still
+    written nowhere.
+
+    Both directions matter. If the derived categories were missing from the
+    seed, `category_ids[draft.category]` would raise `KeyError` here instead
+    of writing a row; if `FORCED_CATEGORY` were ignored, both rows would land
+    under whatever the fixture's `category` says (`other` and `gifts`), which
+    is exactly the silent miscategorisation the forcing exists to prevent.
+    """
+    message = await _claimed_photo_message(db_session)
+    category_ids = await _category_ids(db_session)
+
+    outcome = await extract_and_store(
+        session=db_session,
+        message=message,
+        llm=FakeLlmClient(_load_fixture("bank_cash_and_transfer")),
+        catalog=CATALOG,
+        category_ids=category_ids,
+        today=_ANCHOR,
+        models=_MODELS,
+        max_attempts=2,
+        max_message_attempts=5,
+        max_voice_seconds=120,
+        fetch_image=_fetch_image_ok,
+        anchor_date=_ANCHOR,
+    )
+
+    assert outcome.status == ExtractionStatus.OK
+    assert len(outcome.expense_ids) == 2
+
+    rows = (await db_session.execute(select(Expense).order_by(Expense.amount))).scalars().all()
+    written = {(row.item, row.amount, row.category_id) for row in rows}
+    assert written == {
+        ("Переказ на картку 0000", Decimal("750.25"), category_ids["transfers"]),
+        ("Зняття готівки в банкоматі", Decimal("2000.00"), category_ids["cash"]),
+    }
+
+    # The `own_transfer` row on the same screenshot: reported, stored nowhere.
+    assert outcome.bank_summary is not None
+    assert outcome.bank_summary.plan.skipped_by_kind == {BankRowKind.OWN_TRANSFER: 1}
+
+
+async def test_a_cash_row_dedupes_on_a_resend_like_any_other_written_row(
+    db_session: AsyncSession,
+) -> None:
+    """The new kinds are written through the same keyed insert, so re-sending
+    the screenshot must record nothing new — a hole here would double-count
+    every cash withdrawal on every overlapping screenshot.
+    """
+    category_ids = await _category_ids(db_session)
+
+    for file_id in ("cash-1", "cash-2"):
+        message = await _claimed_photo_message(db_session, file_id=file_id)
+        outcome = await extract_and_store(
+            session=db_session,
+            message=message,
+            llm=FakeLlmClient(_load_fixture("bank_cash_and_transfer")),
+            catalog=CATALOG,
+            category_ids=category_ids,
+            today=_ANCHOR,
+            models=_MODELS,
+            max_attempts=2,
+            max_message_attempts=5,
+            max_voice_seconds=120,
+            fetch_image=_fetch_image_ok,
+            anchor_date=_ANCHOR,
+        )
+
+    assert outcome.expense_ids == ()
+    assert outcome.bank_summary is not None
+    assert {draft.item for draft in outcome.bank_summary.duplicates} == {
+        "Зняття готівки в банкоматі",
+        "Переказ на картку 0000",
+    }
+    assert len((await db_session.execute(select(Expense))).scalars().all()) == 2

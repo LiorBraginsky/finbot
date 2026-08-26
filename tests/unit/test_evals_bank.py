@@ -129,7 +129,7 @@ def test_load_bank_golden_cases_rejects_a_bare_number_amount(tmp_path: Path) -> 
 
 def test_load_bank_golden_cases_rejects_an_unknown_kind(tmp_path: Path) -> None:
     # A typo in a hand-typed label ("expenses", "Expense") would otherwise
-    # silently shrink allowed_amounts and make no_false_expense — the gate
+    # silently shrink allowed_amounts and make no_false_write — the gate
     # Stage 2.5's model choice turns on — quietly stricter than intended.
     images_dir = tmp_path / "images"
     images_dir.mkdir()

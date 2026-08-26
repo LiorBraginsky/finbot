@@ -48,10 +48,12 @@ copying local files by hand is the whole process:
 {"id": "privat-day-01", "image": "privat-day-01.jpeg", "anchor_date": "2026-08-24",
  "is_transaction_feed": true,
  "rows": [
-   {"kind": "savings",      "amount": "6.35",   "partially_visible": false},
-   {"kind": "own_transfer", "amount": "123.60", "partially_visible": false},
-   {"kind": "expense",      "amount": "193.65", "category": "groceries",     "occurred_offset_days": 0,  "partially_visible": false},
-   {"kind": "expense",      "amount": "43.19",  "category": "subscriptions", "occurred_offset_days": 0,  "partially_visible": true}
+   {"kind": "savings",         "amount": "6.35",    "partially_visible": false},
+   {"kind": "own_transfer",    "amount": "123.60",  "partially_visible": false},
+   {"kind": "cash_withdrawal", "amount": "2000.00", "occurred_offset_days": 0,  "partially_visible": false},
+   {"kind": "transfer_out",    "amount": "750.25",  "occurred_offset_days": -1, "partially_visible": false},
+   {"kind": "expense",         "amount": "193.65",  "category": "groceries",     "occurred_offset_days": 0,  "partially_visible": false},
+   {"kind": "expense",         "amount": "43.19",   "category": "subscriptions", "occurred_offset_days": 0,  "partially_visible": true}
  ]}
 ```
 
@@ -73,40 +75,53 @@ copying local files by hand is the whole process:
   bottom), not just the ones that end up written. Amounts are JSON
   **strings**, never bare numbers, for the reason `evals/README.md`'s Case
   format section states.
-  - **`kind`** — one of the five wire values: `expense`, `income`,
-    `savings`, `own_transfer`, `transfer_out`.
-  - **`amount`** — present on every row, regardless of kind: `no_false_
-    expense` needs the amount of every non-expense row too, to know what a
-    model must *never* write as spending.
-  - **`category`** and **`occurred_offset_days`** — only ever present on a
-    `kind: "expense"` row; omit both for every other kind. `category` is one
-    of the thirteen slugs in `finbot.core.categories.catalog.CATALOG`.
-    `occurred_offset_days` is relative to this case's own `anchor_date`
-    (`0` same day, `-1` the day before).
+  - **`kind`** — one of the six wire values: `expense`, `income`, `savings`,
+    `own_transfer`, `cash_withdrawal`, `transfer_out`. Three of them are
+    **written** kinds — `expense`, `cash_withdrawal`, `transfer_out`
+    (ADR-0020) — and that distinction is what several metrics below are
+    scoped to.
+  - **`amount`** — present on every row, regardless of kind: `no_false_write`
+    needs the amount of every *skipped* row too, to know what a model must
+    never cause to be written.
+  - **`occurred_offset_days`** — present on every row of a **written** kind,
+    omitted for the skipped ones. Relative to this case's own `anchor_date`
+    (`0` same day, `-1` the day before). A cash withdrawal's date matters as
+    much as a purchase's, because it lands in `expenses` the same way.
+  - **`category`** — only ever present on a `kind: "expense"` row; omit it
+    for every other kind, including the two written ones. One of the thirteen
+    slugs in `finbot.core.categories.catalog.CATALOG` — never `cash` or
+    `transfers`, which the code assigns from the kind (ADR-0020), so
+    labelling them would score `FORCED_CATEGORY` against itself.
   - **`partially_visible`** — `true` for a row cut off at the edge of the
-    screenshot or otherwise unreadable. A `partially_visible: true` expense
-    row must never be written (R4) — `dropped_exact` scores whether the
-    model correctly left it unwritten instead of guessing.
+    screenshot or otherwise unreadable. A `partially_visible: true` row of a
+    written kind must never be written (R4) — `dropped_exact` scores whether
+    the model correctly left it unwritten instead of guessing.
 
 ## Metrics
 
 `python -m evals.run --modality bank` prints `schema_ok`, `feed_ok`,
-`count_exact`, `kind_exact`, `dropped_exact`, `expense_count_exact`,
-`amount_exact`, `category_exact`, `date_exact` (the last two computed only
-for rows this case actually labelled `expense`, and only when `count_exact`
-holds — an off-by-one row count makes positional comparison meaningless),
+`count_exact`, `kind_exact`, `dropped_exact`, `written_count_exact`,
+`amount_exact`, `category_exact`, `date_exact` (`date_exact` computed only
+for rows of a written kind and `category_exact` only for `expense` rows, and
+both only when `count_exact` holds — an off-by-one row count makes positional
+comparison meaningless),
 mean cost and latency p50/p95, alongside:
 
-> **`no_false_expense` — set-based, and deliberately asymmetric.** Every
+> **`no_false_write` — set-based, and deliberately asymmetric.** Every
 > amount the model's output would actually cause to be *written* to
 > `expenses` must appear, with multiplicity, among this case's own
-> `expense`-kind, fully-visible row amounts. It counts one direction only —
-> money recorded that was never spent — and stays scoreable even when the
-> model miscounts rows entirely, which is exactly when every positional
+> fully-visible rows of a **written** kind. It counts one direction only —
+> money recorded that never left the account — and stays scoreable even when
+> the model miscounts rows entirely, which is exactly when every positional
 > metric above goes blind. This is the metric `MODEL_VISION`'s choice turns
-> on: a savings jar or a transfer written as spending destroys a month of
-> reports; a missed expense is a nuisance the household will notice and
-> retype.
+> on: a savings jar written as spending destroys a month of reports; a missed
+> expense is a nuisance the household will notice and retype.
+>
+> It was `no_false_expense`, scored over `expense` rows alone, until ADR-0020
+> made cash withdrawals and outgoing transfers written kinds too. The name
+> changed with the definition on purpose — `docs/journal.md` holds real
+> `no_false_expense` numbers from before that decision, and reusing the name
+> would make them look comparable to these.
 >
 > **Its limit, stated plainly: it compares a multiset of amounts, nothing
 > more.** If a case's own `savings`/`transfer`/`income` row and a real
@@ -115,7 +130,7 @@ mean cost and latency p50/p95, alongside:
 > still passes, because the written amount is still a member of the allowed
 > multiset. This has not shown up in any case set built so far, precisely
 > because real amounts rarely collide across kinds. **If a case set ever
-> needs two same-amount rows of different kinds, `no_false_expense`'s
+> needs two same-amount rows of different kinds, `no_false_write`'s
 > multiset-of-amounts check is no longer enough for that case** — score it
 > instead on `(amount, resolved_date)` pairs, which the swap above does not
 > preserve.
